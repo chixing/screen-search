@@ -355,7 +355,7 @@ def build_text_candidates(words, max_words=MAX_PHRASE_WORDS):
 
 
 def _text_matches(query, candidates, exact=False):
-    """Return the shortest viable candidate for each same-line start word."""
+    """Return the smallest viable non-overlapping text candidates."""
     by_start = {}
     for c in candidates:
         hit = (c["n"] == query) if exact else (query in c["n"])
@@ -365,7 +365,29 @@ def _text_matches(query, candidates, exact=False):
         prev = by_start.get(key)
         if prev is None or c["word_count"] < prev["word_count"]:
             by_start[key] = c
-    return sorted(by_start.values(), key=lambda c: (c["y"], c["x"]))
+    return _suppress_overlapping_matches(by_start.values())
+
+
+def _overlap_ratio(a, b):
+    ax1, ay1, ax2, ay2 = a["x"], a["y"], a["x"] + a["w"], a["y"] + a["h"]
+    bx1, by1, bx2, by2 = b["x"], b["y"], b["x"] + b["w"], b["y"] + b["h"]
+    iw = max(0, min(ax2, bx2) - max(ax1, bx1))
+    ih = max(0, min(ay2, by2) - max(ay1, by1))
+    intersection = iw * ih
+    if intersection <= 0:
+        return 0
+    smaller_area = max(1, min(a["w"] * a["h"], b["w"] * b["h"]))
+    return intersection / smaller_area
+
+
+def _suppress_overlapping_matches(matches):
+    kept = []
+    for m in sorted(matches, key=lambda c: (
+            c["word_count"], c["w"] * c["h"], c["y"], c["x"])):
+        if any(_overlap_ratio(m, k) > 0.35 for k in kept):
+            continue
+        kept.append(m)
+    return sorted(kept, key=lambda c: (c["y"], c["x"]))
 
 
 def _hint_code(index, first_chars):

@@ -63,6 +63,18 @@ class MatcherTests(unittest.TestCase):
         self.assertEqual(suffix, "")
         self.assertEqual([m["text"] for m in matches], ["Settings"])
 
+    def test_contains_search_suppresses_larger_overlapping_phrases(self):
+        candidates = build_text_candidates([
+            word("Main", 0, index=0),
+            word("app", 42, index=1),
+            word("screen_click_gui.py", 82, index=2),
+        ])
+
+        matches, _, suffix = resolve_selector_matches(_norm("app"), candidates)
+
+        self.assertEqual(suffix, "")
+        self.assertEqual([m["text"] for m in matches], ["app"])
+
     def test_selector_suffix_disqualifies_nonmatching_highlights(self):
         candidates = build_text_candidates([
             word("Alpha", 0, index=0),
