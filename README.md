@@ -27,10 +27,10 @@ Resident process (single instance, named mutex)
 6. **Click** — `SendInput` with a short press dwell, after bringing the target window to the foreground. Works across all monitors including negative coordinates.
 
 ### Key design decisions
-- **All-monitor OCR by default** — Alt+F searches the whole virtual desktop. With upscale enabled, the active monitor is OCR'd first at 2×, then the remaining monitors are OCR'd at 1.25× and merged in when complete.
+- **All-monitor OCR by default** — Alt+F searches the whole virtual desktop. With upscale enabled, the active monitor is OCR'd first at 2×, then the remaining monitors are OCR'd at 1.25× and merged in when complete. A high-quality background pass then re-OCRs all monitors at 2× to improve match rate.
 - **No PNG round-trip** — building the bitmap from raw bytes saved ~28%.
 - **Cache + filter in memory** — prefix/selector filtering as you type stays instant.
-- **Progressive refresh** — broad searches can show active-monitor matches first, then expand when the full all-monitor OCR completes.
+- **Progressive refresh** — broad searches can show active-monitor matches first, expand when the fast all-monitor OCR completes, then improve again when the high-quality pass finishes.
 - **Enter is the only action key** — typed selector letters only focus/narrow highlights. They do not click.
 - **Overlays are input-transparent** — so the synthetic click passes through to the real target, and the highlight never steals the click.
 - **Language**: Python is NOT the bottleneck — the OS OCR engine is, and that's language-independent. A C#/Rust rewrite would only help distribution and a flicker-free native overlay, not raw speed.
@@ -98,8 +98,54 @@ The popup is a **borderless tool window with no taskbar button**, so komorebi le
 ---
 
 ## Footprint
-Resident idle: **~60 MB RAM, ~0 % CPU**. Two kernel-blocked threads wait on the normal and all-monitor events; a 150 ms timer bridges them to the Tk loop. No network/disk/GPU.
+Resident idle: **~60 MB RAM, ~0 % CPU**. Two kernel-blocked threads wait on the normal and all-monitor events; a 25 ms Tk timer bridges them to the UI loop. No network/disk/GPU.
+
+Alt+F latency has two parts:
+
+- The resident checks its event queue on that 25 ms timer.
+- `komorebi.ahk` currently launches `pythonw screen_click_gui.py --toggle` to signal the resident, which adds Python process startup/import overhead. Moving the named-event signal directly into AHK would remove most of that remaining resident-toggle latency.
 
 ---
 
-See [TODO.md](TODO.md) for outstanding work and [HANDOFF.md](HANDOFF.md) to resume development.
+## Development notes
+
+### Validation
+
+Run these after code edits:
+
+```powershell
+python -c "import ast; ast.parse(open('screen_click_gui.py', encoding='utf-8').read())"
+python -m py_compile screen_click_gui.py test_matcher.py
+python -m unittest test_matcher.py
+```
+
+Restart the resident:
+
+```powershell
+Get-CimInstance Win32_Process -Filter "Name='pythonw.exe' OR Name='python.exe'" |
+  Where-Object { $_.CommandLine -like '*screen_click_gui.py*' } |
+  ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+
+Start-Process C:\Python314\pythonw.exe `
+  -ArgumentList "$HOME\workspace\screen-search\screen_click_gui.py","--toggle" `
+  -WindowStyle Hidden
+```
+
+### Known constraints
+
+- Windows OCR rejects images over 10,000 px in either dimension; `_effective_scale` clamps upscale accordingly.
+- `INACTIVE_MONITOR_SCALE` controls the lower scale used for non-active monitors during the fast all-monitor refresh.
+- Overlay windows must remain `WS_EX_TRANSPARENT`, and the color key must be reapplied through `make_click_through`.
+- The OS OCR engine is the main performance cost.
+- Per-monitor DPI awareness is not implemented yet. Mixed monitor scaling can cause overlay/click coordinate drift.
+- Do not add UI Automation; OCR is the intended recognition and targeting mechanism.
+
+### Remaining work
+
+- Physical UX pass for prefix + selector mode.
+- Confirm physical Alt+F cold-start/resident signaling and default all-monitor capture.
+- Add OCR preprocessing variants for terminal/dark/thin text.
+- Persist settings across restarts.
+- Optional packaging with PyInstaller.
+
+---

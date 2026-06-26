@@ -248,7 +248,7 @@ def _offset_words(words, mon, base_region, line_offset=0):
     return moved, next_line
 
 
-def _snapshot_from_words(words, region, mode, complete):
+def _snapshot_from_words(words, region, mode, complete, quality="fast"):
     for w in words:
         w["n"] = _norm(w["text"])
     return {
@@ -257,6 +257,7 @@ def _snapshot_from_words(words, region, mode, complete):
         "region": region,
         "mode": mode,
         "complete": complete,
+        "quality": quality,
     }
 
 
@@ -504,19 +505,20 @@ class App:
         pop.withdraw()
         pop.overrideredirect(True)         # borderless -> komorebi won't tile it
         pop.attributes("-topmost", True)
-        pop.configure(bg="#202020")
+        pop.configure(bg="#0f172a")
 
-        border = tk.Frame(pop, bg="#4a4a4a", padx=2, pady=2)
+        border = tk.Frame(pop, bg="#38bdf8", padx=3, pady=3)
         border.pack(fill="both", expand=True)
-        inner = tk.Frame(border, bg="#202020", padx=12, pady=10)
+        inner = tk.Frame(border, bg="#0f172a", padx=12, pady=10)
         inner.pack(fill="both", expand=True)
 
-        self.entry = tk.Entry(inner, font=("Segoe UI", 14), bg="#202020",
-                              fg="#f0f0f0", insertbackground="#f0f0f0",
+        self.entry = tk.Entry(inner, font=("Segoe UI", 14), bg="#1e293b",
+                              fg="#f8fafc", insertbackground="#facc15",
                               relief="flat", highlightthickness=0)
         self.entry.pack(fill="x")
         self.pop_status = tk.Label(inner, text="Type to search.", anchor="w",
-                                   bg="#202020", fg="#888", font=("Segoe UI", 9))
+                                   bg="#0f172a", fg="#bae6fd",
+                                   font=("Segoe UI", 9))
         self.pop_status.pack(fill="x", pady=(6, 0))
 
         self.entry.bind("<KeyRelease>", self._on_type)
@@ -611,6 +613,12 @@ class App:
             pass
 
     def _hide_popup(self, e=None):
+        if self._debounce_id is not None:
+            self.root.after_cancel(self._debounce_id)
+            self._debounce_id = None
+        self._capture_seq += 1
+        self.capturing = False
+        self.hint_context = None
         self._close_overlay()
         self.popup.withdraw()
         self.popup_visible = False
@@ -705,7 +713,7 @@ class App:
             elif a == "quit":
                 self._quit()
                 return
-        self.root.after(150, self._poll_toggle)
+        self.root.after(25, self._poll_toggle)
 
     def _quit(self):
         if self._tray_icon is not None:
@@ -767,12 +775,15 @@ class App:
         mode = self._capture_mode(self._scan_all_override)
         all_mon, active_scale, inactive_scale = mode
 
-        def publish(words, region, complete):
-            snap = _snapshot_from_words(words, region, mode, complete)
+        def publish(words, region, complete, quality="fast"):
+            snap = _snapshot_from_words(words, region, mode, complete, quality)
             self.root.after(0, lambda: self._accept_snapshot(seq, snap))
 
         def fail(ex):
             self.root.after(0, lambda: self._capture_failed(seq, ex))
+
+        def finish_without_update():
+            self.root.after(0, lambda: self._finish_capture(seq))
 
         def work():
             try:
@@ -810,6 +821,20 @@ class App:
                         if idx == 0:
                             publish(list(all_words), base_region, False)
                     publish(all_words, base_region, True)
+
+                    if active_scale > inactive_scale:
+                        try:
+                            hq_words = []
+                            line_offset = 0
+                            for mon in ordered:
+                                shot = sct.grab(mon)
+                                words = ocr_words(shot, active_scale)
+                                moved, line_offset = _offset_words(
+                                    words, mon, base_region, line_offset)
+                                hq_words.extend(moved)
+                            publish(hq_words, base_region, True, "high")
+                        except Exception:
+                            finish_without_update()
             except Exception as ex:
                 fail(ex)
 
@@ -819,19 +844,42 @@ class App:
         if seq != self._capture_seq:
             return
         self.snap = snap
-        self.capturing = not snap.get("complete", True)
+        self.capturing = self._snapshot_still_refreshing(snap)
+        if not self.popup_visible:
+            return
         if self.entry.get().strip():
             self._live_filter()
             return
-        if snap.get("complete", True):
+        if snap.get("quality") == "high":
             self.set_status("Type to search.")
+        elif snap.get("complete", True):
+            self.set_status("Type to search. Full scan ready; improving OCR...")
         else:
             self.set_status("Type to search. Active monitor ready; scanning others...")
+
+    def _snapshot_still_refreshing(self, snap):
+        if not snap.get("complete", True):
+            return True
+        all_mon, active_scale, inactive_scale = snap.get("mode", (False, 1.0, 1.0))
+        return (snap.get("quality") != "high"
+                and all_mon
+                and active_scale > inactive_scale)
+
+    def _finish_capture(self, seq):
+        if seq != self._capture_seq:
+            return
+        self.capturing = False
+        if not self.popup_visible:
+            return
+        if not self.entry.get().strip():
+            self.set_status("Type to search.")
 
     def _capture_failed(self, seq, ex):
         if seq != self._capture_seq:
             return
         self.capturing = False
+        if not self.popup_visible:
+            return
         self.set_status(f"OCR error: {ex}")
 
     def _refilter(self):
@@ -879,7 +927,7 @@ class App:
 
         if not filtered and not self.debug_all.get():
             self._close_overlay()
-            freshness = " yet" if not self.snap.get("complete", True) else ""
+            freshness = self._snapshot_status_suffix()
             self.set_status(f"No match{freshness} for '{text}' "
                             f"({len(words)} words read).")
             return
@@ -887,13 +935,24 @@ class App:
         self._draw_overlay()
         if filtered:
             mode = "selector" if hint_suffix else "text"
-            freshness = "" if self.snap.get("complete", True) else " (partial)"
+            freshness = self._snapshot_status_suffix(parenthesized=True)
             self.set_status(f"{len(filtered)} {mode} match(es){freshness} "
                             f"for '{text}'. Type selector letters; Enter = click.")
         else:
-            freshness = "" if self.snap.get("complete", True) else " yet"
+            freshness = self._snapshot_status_suffix()
             self.set_status(f"No match{freshness} -- showing all "
                             f"{len(words)} OCR words.")
+
+    def _snapshot_status_suffix(self, parenthesized=False):
+        if self.snap is None:
+            return ""
+        if not self.snap.get("complete", True):
+            text = "partial"
+        elif self.capturing and self._snapshot_still_refreshing(self.snap):
+            text = "improving"
+        else:
+            return ""
+        return f" ({text})" if parenthesized else f" yet ({text})"
 
     def _recapture(self, e=None):
         """Force a fresh OCR snapshot (use after the screen behind changed)."""
@@ -901,7 +960,7 @@ class App:
         self.hint_context = None
         self._close_overlay()
         if self.entry.get().strip():
-            self._capture_then_filter()
+            self._capture_then_filter(force=True)
         return "break"
 
     def _ensure_overlay(self):
