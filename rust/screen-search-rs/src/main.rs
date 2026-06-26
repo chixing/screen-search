@@ -1373,21 +1373,7 @@ impl App {
                 color,
             );
             if !m.hint.is_empty() {
-                let label_y = if m.y > 22.0 {
-                    m.y.round() as i32 - 20
-                } else {
-                    (m.y + m.h).round() as i32 + 3
-                };
-                draw_filled_rect(
-                    &mut pixels,
-                    self.region.width,
-                    self.region.height,
-                    m.x.round() as i32,
-                    label_y,
-                    m.x.round() as i32 + 24,
-                    label_y + 16,
-                    color,
-                );
+                draw_label_background(&mut pixels, self.region.width, self.region.height, m, color);
             }
         }
 
@@ -1472,6 +1458,66 @@ fn draw_rect_outline(
     }
 }
 
+fn label_rect(m: &Candidate) -> (i32, i32, i32, i32) {
+    let left = m.x.round() as i32;
+    let top = if m.y > 22.0 {
+        m.y.round() as i32 - 20
+    } else {
+        (m.y + m.h).round() as i32 + 3
+    };
+    let width = (m.hint.chars().count() as i32 * 9 + 10).max(24);
+    (left, top, left + width, top + 16)
+}
+
+fn draw_label_background(
+    buf: &mut [u8],
+    width: i32,
+    height: i32,
+    m: &Candidate,
+    rgba: (u8, u8, u8, u8),
+) {
+    let (left, top, right, bottom) = label_rect(m);
+    draw_filled_rect(
+        buf,
+        width,
+        height,
+        left - 1,
+        top - 1,
+        right + 1,
+        bottom + 1,
+        (THEME_INK.0, THEME_INK.1, THEME_INK.2, 255),
+    );
+    draw_filled_rect(
+        buf,
+        width,
+        height,
+        left,
+        top,
+        right,
+        bottom,
+        (rgba.0, rgba.1, rgba.2, 255),
+    );
+}
+
+fn force_label_alpha(buf: &mut [u8], width: i32, height: i32, matches: &[Candidate]) {
+    for m in matches {
+        if m.hint.is_empty() {
+            continue;
+        }
+        let (left, top, right, bottom) = label_rect(m);
+        let left = (left - 1).max(0).min(width);
+        let right = (right + 1).max(0).min(width);
+        let top = (top - 1).max(0).min(height);
+        let bottom = (bottom + 1).max(0).min(height);
+        for y in top..bottom {
+            for x in left..right {
+                let idx = ((y * width + x) * 4 + 3) as usize;
+                buf[idx] = 255;
+            }
+        }
+    }
+}
+
 unsafe fn update_layered_overlay(
     hwnd: HWND,
     region: Region,
@@ -1523,6 +1569,12 @@ unsafe fn update_layered_overlay(
     let old = SelectObject(mem, HBITMAP(bitmap.0));
     trace_log("update_layered_overlay: draw hint text");
     draw_hint_text(mem, matches);
+    force_label_alpha(
+        std::slice::from_raw_parts_mut(bits as *mut u8, pixels.len()),
+        region.width,
+        region.height,
+        matches,
+    );
 
     let dst = POINT {
         x: region.left,
@@ -1583,19 +1635,15 @@ unsafe fn draw_hint_text(hdc: HDC, matches: &[Candidate]) {
     );
     let old_font = SelectObject(hdc, HFONT(font.0));
     SetBkMode(hdc, TRANSPARENT);
-    SetTextColor(hdc, rgb(17, 24, 39));
+    SetTextColor(hdc, rgb_tuple(THEME_INK));
     for m in matches {
         if m.hint.is_empty() {
             continue;
         }
         let label = m.hint.to_uppercase();
         let ws = wide(&label);
-        let y = if m.y > 22.0 {
-            m.y.round() as i32 - 19
-        } else {
-            (m.y + m.h).round() as i32 + 4
-        };
-        TextOutW(hdc, m.x.round() as i32 + 4, y, &ws[..ws.len() - 1]);
+        let (left, top, _, _) = label_rect(m);
+        TextOutW(hdc, left + 5, top + 1, &ws[..ws.len() - 1]);
     }
     SelectObject(hdc, old_font);
     DeleteObject(font);
@@ -1691,16 +1739,7 @@ fn run_overlay_test() -> Result<()> {
                 3,
                 color,
             );
-            draw_filled_rect(
-                &mut pixels,
-                region.width,
-                region.height,
-                m.x.round() as i32,
-                m.y.round() as i32 - 20,
-                m.x.round() as i32 + 24,
-                m.y.round() as i32 - 4,
-                color,
-            );
+            draw_label_background(&mut pixels, region.width, region.height, m, color);
         }
         update_layered_overlay(hwnd, region, &pixels, &matches)?;
         ShowWindow(hwnd, SW_SHOW);
