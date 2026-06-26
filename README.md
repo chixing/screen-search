@@ -13,22 +13,21 @@ Resident process (single instance, named mutex)
 ├─ System tray icon (pystray)         → Search / Settings / Quit
 ├─ Settings window (Tk)               → config toggles; close = hide to tray
 ├─ Search popup (borderless tool win) → the live search box
-├─ Highlight overlay (click-through)  → red boxes over matches
+├─ Highlight overlay (click-through)  → boxes over matches
 ├─ AutoHotkey  Alt+F                  → --toggle
-├─ AutoHotkey  Alt+Shift+F            → --toggle-all
 └─ Named Win32 events                 → signal/cold-start the resident
 ```
 
 ### The search pipeline
-1. **Capture** — `mss` grabs the monitor under the cursor (or all monitors if enabled). Raw BGRA pixels.
+1. **Capture** — `mss` grabs all monitors by default, or only the monitor under the cursor if that setting is disabled. Raw BGRA pixels.
 2. **OCR** — Windows' built-in engine (`Windows.Media.Ocr` via `winsdk`). The raw BGRA is turned straight into a `SoftwareBitmap` (no PNG encode/decode). Optional 2× upscale for small text (clamped to the engine's 10000 px max dimension).
 3. **Snapshot cache** — OCR runs **once** when you start typing; every keystroke filters the cached OCR result in memory (200 ms debounce). No re-OCR per keystroke.
 4. **Match + select** — OCR words are grouped into same-line phrase candidates. Spaces and punctuation are ignored for matching, so `openf` and `open f` can both match `Open File`. Each highlighted match gets a short selector suffix; typing selector letters disqualifies nonmatching highlights but never clicks.
-5. **Highlight** — a click-through (`WS_EX_TRANSPARENT`) overlay covering the captured monitor draws a box per match; the selected one is blue and other matches are white. Overlay labels show only the selector suffix.
+5. **Highlight** — a click-through (`WS_EX_TRANSPARENT`) overlay covering the captured region draws a box per match; the selected one is green and other matches are orange. Overlay labels show only the selector suffix.
 6. **Click** — `SendInput` with a short press dwell, after bringing the target window to the foreground. Works across all monitors including negative coordinates.
 
 ### Key design decisions
-- **Active-monitor OCR by default** — OCR cost scales with pixels; scanning one monitor instead of the whole 7280-px desktop is ~5× faster (~150 ms vs ~750 ms).
+- **All-monitor OCR by default** — Alt+F searches the whole virtual desktop. OCR cost scales with pixels, so the Settings checkbox can still disable all-monitor scan if speed matters more.
 - **No PNG round-trip** — building the bitmap from raw bytes saved ~28%.
 - **Cache + filter in memory** — prefix/selector filtering as you type stays instant.
 - **Enter is the only action key** — typed selector letters only focus/narrow highlights. They do not click.
@@ -51,21 +50,20 @@ pip install mss pillow winsdk pystray
 | `python screen_click_gui.py` | Resident; shows the Settings window. |
 | `pythonw screen_click_gui.py --background` | Resident, **hidden**, lives in the tray. Use for autostart. |
 | `python screen_click_gui.py --toggle` | Signals the running resident to toggle the search popup (or cold-starts one). For komorebi.ahk. |
-| `python screen_click_gui.py --toggle-all` | Signals the resident or cold-starts an all-monitor search. |
+| `python screen_click_gui.py --toggle-all` | Compatibility/debug path for forcing an all-monitor search. |
 
 ### Using the search popup
 - **Alt+F** is owned by `komorebi.ahk` and runs `--toggle`.
-- **Alt+Shift+F** is owned by `komorebi.ahk` and runs `--toggle-all`.
 - Tray → Search and `--toggle` use the configured monitor setting.
 - Type a visible text prefix. Matches highlight live with selector labels.
 - Keep typing selector letters to disqualify other highlights. Spaces in your input do not break phrase matches.
-- **Tab / Shift+Tab** cycle the selection (green box).
+- **Tab / Shift+Tab** cycle the selection.
 - **Enter** clicks the selected match.
 - **Esc** or clicking away dismisses it.
 - **F5** re-captures the screen (use if the screen behind changed).
 
 ### Settings (tray → Settings, or launch with no flag)
-- **Scan all monitors** — OCR the whole virtual desktop instead of just the active monitor (slower).
+- **Scan all monitors** — on by default; OCR the whole virtual desktop instead of just the active monitor.
 - **Exact text only** — off = prefix + selector matching (default), on = exact normalized text.
 - **Upscale 2× for small text** — better OCR accuracy on thin/terminal fonts (default on).
 - **Show all OCR words (debug)** — faint blue box around every detected word, to tell an OCR miss from a match miss.
@@ -78,7 +76,7 @@ The popup matches OCR words and adjacent same-line phrases. Matching is normaliz
 
 ## Komorebi integration
 
-The active `komorebi.ahk` is the sole owner of both hotkeys:
+The active `komorebi.ahk` owns the global hotkey:
 
 ```ahk
 ScreenSearch(mode) {
@@ -88,7 +86,6 @@ ScreenSearch(mode) {
 }
 
 !f:: ScreenSearch("--toggle")
-!+f:: ScreenSearch("--toggle-all")
 ```
 
 The first press cold-starts Screen Search. Later presses signal the resident through named Win32 events. Screen Search does not register global hotkeys and does not need its own Windows Startup entry.

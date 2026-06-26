@@ -6,8 +6,7 @@
 
 ## Verification
 
-- [ ] **Confirm physical Alt+F cold-start and resident signaling.** The first AHK invocation should launch the resident and open a focused popup; later presses should signal the existing process.
-- [ ] **Confirm physical Alt+Shift+F scans all monitors.** The AHK `--toggle-all` command should force all-monitor capture for that popup session without changing the configured checkbox state.
+- [ ] **Confirm physical Alt+F cold-start and resident signaling.** The first AHK invocation should launch the resident and open a focused popup; later presses should signal the existing process. Default capture should scan all monitors.
 
 ## Robustness
 - [ ] **Per-monitor DPI scaling.** Process is not DPI-aware. If monitors run at different scaling (e.g. 100% + 150%), captured pixels and click/overlay coords can drift on the scaled monitor. Fix: `SetProcessDpiAwarenessContext(PER_MONITOR_AWARE_V2)` at startup, then re-verify overlay/cursor math. (Currently fine because relevant monitors are effectively 100%.)
@@ -25,7 +24,7 @@
 
 ## Known facts / gotchas
 - Win+Alt+G and Ctrl+Alt+G are **already registered by another app** on this machine (RegisterHotKey err 1409) — do not reuse them.
-- `komorebi.ahk` owns Alt+F and Alt+Shift+F. Screen Search does not call `RegisterHotKey`.
+- `komorebi.ahk` owns Alt+F. Screen Search does not call `RegisterHotKey`.
 - Prefix + selector matching is implemented in the popup path. Matching ignores spaces/punctuation, builds same-line phrase candidates, and only clicks on Enter.
 - Windows OCR **max image dimension is 10000 px** — full-desktop 2× upscale is auto-clamped (~1.37× for the 7280-px desktop); active-monitor gets full 2×.
 - No Screen Search Startup entry is required. The first AHK hotkey press cold-starts the resident.

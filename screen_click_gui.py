@@ -3,12 +3,12 @@ Screen Search + Click  --  GUI prototype.
 
 Flow:
   1. Type a visible text prefix.
-  2. Matching words/phrases get red boxes plus a short selector label.
+  2. Matching words/phrases get boxes plus a short selector label.
   3. Keep typing the selector letters to disqualify other highlights.
   4. Press Enter to click the focused match. Press Esc to cancel.
 
 Visual feedback:
-  red box      = a match
+  orange box   = a match
   green box    = currently selected match
   red pulse    = the click actually firing
 
@@ -433,7 +433,7 @@ class App:
         self._toggle_q = queue.Queue()
 
         # shared settings (used by the live search)
-        self.all_monitors = tk.BooleanVar(value=False)
+        self.all_monitors = tk.BooleanVar(value=True)
         self.whole_word = tk.BooleanVar(value=False)
         self.upscale = tk.BooleanVar(value=True)
         self.debug_all = tk.BooleanVar(value=False)
@@ -457,7 +457,7 @@ class App:
         frm = ttk.Frame(root, padding=14)
         frm.pack(fill="both", expand=True)
 
-        ttk.Label(frm, text="AutoHotkey:  Alt + F  |  Alt + Shift + F (all monitors)",
+        ttk.Label(frm, text="AutoHotkey:  Alt + F",
                   font=("Segoe UI", 10, "bold")).pack(anchor="w")
         ttk.Label(frm, text="Normal search command:",
                   foreground="#555").pack(anchor="w", pady=(6, 0))
@@ -471,7 +471,7 @@ class App:
                   foreground="#555", wraplength=410,
                   justify="left").pack(anchor="w", pady=(0, 10))
 
-        ttk.Checkbutton(frm, text="Scan all monitors (slower)",
+        ttk.Checkbutton(frm, text="Scan all monitors",
                         variable=self.all_monitors).pack(anchor="w")
         ttk.Checkbutton(frm, text="Exact text only (off = prefix + selectors)",
                         variable=self.whole_word,
@@ -887,7 +887,7 @@ class App:
             y1 = m["y"] + self.off_y - oy
             x2, y2 = x1 + m["w"], y1 + m["h"]
             sel = (i == self.selected)
-            color = "#3b82f6" if sel else "#f8fafc"
+            color = "#22c55e" if sel else "#fb923c"
             cv.create_rectangle(x1 - 4, y1 - 4, x2 + 4, y2 + 4,
                                 outline="#111827", width=5 if sel else 3)
             cv.create_rectangle(x1 - 3, y1 - 3, x2 + 3, y2 + 3,
@@ -896,8 +896,8 @@ class App:
             if hint:
                 label_y = y1 - 6 if y1 > 22 else y2 + 16
                 label = hint.upper()
-                bg = "#2563eb" if sel else "#111827"
-                fg = "#ffffff"
+                bg = "#22c55e" if sel else "#fb923c"
+                fg = "#111827"
                 text_id = cv.create_text(
                     x1 - 3, label_y, text=label, anchor="sw",
                     fill=fg, font=("Segoe UI", 10, "bold"))

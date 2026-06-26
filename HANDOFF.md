@@ -17,22 +17,21 @@ The project uses Python 3.14 from `C:\Python314`. Installed dependencies are `ms
 ## Current controls
 
 - Alt+F: `komorebi.ahk` runs `--toggle`.
-- Alt+Shift+F: `komorebi.ahk` runs `--toggle-all`.
 - Tab / Shift+Tab: cycle matches.
 - Selector letters: narrow/focus highlighted matches.
 - Enter: click the selected match.
 - Escape: dismiss.
 - F5: recapture.
 - `--background`: start hidden in the tray.
-- `--toggle`: signal or cold-start normal search.
-- `--toggle-all`: signal or cold-start all-monitor search.
+- `--toggle`: signal or cold-start search. The default setting scans all monitors.
+- `--toggle-all`: compatibility/debug path for forcing all-monitor search.
 
 Alt+F intentionally overrides the global File-menu accelerator.
-AutoHotkey owns both global hotkeys. Screen Search does not register hotkeys and has no Windows Startup entry; the first hotkey press cold-starts it.
+AutoHotkey owns the global hotkey. Screen Search does not register hotkeys and has no Windows Startup entry; the first hotkey press cold-starts it.
 
 ## Current priority
 
-Run a physical UX pass for prefix + selector mode. Validate that labels are readable, selector characters narrow matches quickly enough, phrase bounds click the intended target center, and Alt+F / Alt+Shift+F behave correctly when invoked through the elevated AutoHotkey config.
+Run a physical UX pass for prefix + selector mode. Validate that labels are readable, selector characters narrow matches quickly enough, phrase bounds click the intended target center, and Alt+F behaves correctly when invoked through the elevated AutoHotkey config.
 
 Do not add UI Automation. OCR remains the intended recognition and targeting mechanism.
 
@@ -58,7 +57,7 @@ Start-Process C:\Python314\pythonw.exe `
   -WindowStyle Hidden
 ```
 
-Physical verification is still required for the AHK cold-start path, focus retention, and Alt+Shift+F all-monitor capture.
+Physical verification is still required for the AHK cold-start path, focus retention, and default all-monitor capture.
 
 ## Important constraints
 
