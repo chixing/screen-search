@@ -2,6 +2,7 @@ import unittest
 
 from screen_click_gui import (
     _norm,
+    _offset_words,
     build_text_candidates,
     resolve_selector_matches,
 )
@@ -66,6 +67,18 @@ class MatcherTests(unittest.TestCase):
         self.assertEqual(suffix, chosen_hint[0])
         self.assertTrue(0 < len(narrowed) < len(matches))
         self.assertIn("Alpine", {m["text"] for m in narrowed})
+
+    def test_offset_words_moves_monitor_coordinates_into_base_region(self):
+        words = [word("Left", 10, line=2, index=0)]
+        monitor = {"left": -1080, "top": -256, "width": 1080, "height": 1920}
+        base_region = (-1080, -267, 7280, 1931)
+
+        moved, next_line = _offset_words(words, monitor, base_region, 10)
+
+        self.assertEqual(moved[0]["x"], 10)
+        self.assertEqual(moved[0]["y"], 21)
+        self.assertEqual(moved[0]["line"], 12)
+        self.assertEqual(next_line, 13)
 
 
 if __name__ == "__main__":

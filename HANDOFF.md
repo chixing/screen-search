@@ -12,6 +12,8 @@ Screen Search is a Windows 11 tray utility implemented in `screen_click_gui.py`.
 
 The popup uses prefix + selector matching. OCR words are grouped into adjacent same-line phrase candidates, normalized by removing spaces/punctuation/case, and displayed with selector suffixes. Typing selector letters only narrows/focuses highlights; Enter is the only click action.
 
+OCR starts immediately when the popup opens. A previous snapshot is reused while the fresh snapshot runs. With all-monitor scan and upscale enabled, the active monitor is published first at 2× and the remaining monitors are scanned at 1.25× before replacing it with the complete all-monitor snapshot.
+
 The project uses Python 3.14 from `C:\Python314`. Installed dependencies are `mss`, `pillow`, `winsdk`, and `pystray`. It must support multiple monitors, including negative desktop coordinates.
 
 ## Current controls
@@ -62,5 +64,6 @@ Physical verification is still required for the AHK cold-start path, focus reten
 ## Important constraints
 
 - Windows OCR rejects images over 10,000 pixels in either dimension; `_effective_scale` clamps upscale accordingly.
+- `INACTIVE_MONITOR_SCALE` controls the lower scale used for non-active monitors during all-monitor upscale refresh.
 - Overlay windows must remain `WS_EX_TRANSPARENT`, and the color key must be reapplied through `make_click_through`.
 - The OS OCR engine is the main performance cost.

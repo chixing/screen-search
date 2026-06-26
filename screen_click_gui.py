@@ -230,12 +230,44 @@ def grab_screen(all_monitors=False):
         return shot, region
 
 
+def _capture_region(mon):
+    return (mon["left"], mon["top"], mon["width"], mon["height"])
+
+
+def _offset_words(words, mon, base_region, line_offset=0):
+    """Move OCR words from monitor-local coordinates into base-region space."""
+    dx = mon["left"] - base_region[0]
+    dy = mon["top"] - base_region[1]
+    moved = []
+    for w in words:
+        ww = dict(w)
+        ww["x"] += dx
+        ww["y"] += dy
+        ww["line"] = ww.get("line", 0) + line_offset
+        moved.append(ww)
+    next_line = max((w.get("line", 0) for w in moved), default=line_offset) + 1
+    return moved, next_line
+
+
+def _snapshot_from_words(words, region, mode, complete):
+    for w in words:
+        w["n"] = _norm(w["text"])
+    return {
+        "words": words,
+        "candidates": build_text_candidates(words),
+        "region": region,
+        "mode": mode,
+        "complete": complete,
+    }
+
+
 def _norm(s):
     return re.sub(r"[^\w]", "", s.lower())
 
 
 HINT_KEYS = "asdfjklghqwertyuiopzxcvbnm"
 MAX_PHRASE_WORDS = 6
+INACTIVE_MONITOR_SCALE = 1.25
 
 
 def _candidate_from_words(parts):
@@ -377,7 +409,7 @@ def search(query, all_monitors=False, whole_word=True, scale=1.0):
 
 # ---------- click confirmation pulse ------------------------------
 def flash_click(root, x, y):
-    size = 140
+    size = 118
     ov = tk.Toplevel(root)
     ov.overrideredirect(True)
     ov.attributes("-topmost", True)
@@ -391,14 +423,27 @@ def flash_click(root, x, y):
 
     def animate(step=0):
         cv.delete("all")
-        if step > 9:
+        if step > 11:
             ov.destroy()
             return
-        r = 8 + step * 7
-        cv.create_oval(c - r, c - r, c + r, c + r, outline="#ff2020",
-                       width=max(1, 5 - step // 3))
-        cv.create_oval(c - 6, c - 6, c + 6, c + 6, fill="#ff2020", outline="")
-        ov.after(40, lambda: animate(step + 1))
+        t = step / 11
+        r1 = 10 + t * 42
+        r2 = 4 + t * 24
+        outer = "#22c55e" if step < 7 else "#60a5fa"
+        inner = "#0f172a"
+        width = max(1, int(4 - t * 3))
+        cv.create_oval(c - r1, c - r1, c + r1, c + r1,
+                       outline=outer, width=width)
+        cv.create_oval(c - r2, c - r2, c + r2, c + r2,
+                       outline="#f8fafc", width=2)
+        cv.create_oval(c - 4, c - 4, c + 4, c + 4,
+                       fill=inner, outline="#f8fafc", width=1)
+        tick = 14 + t * 8
+        cv.create_line(c - tick, c, c - 6, c, fill=outer, width=2)
+        cv.create_line(c + 6, c, c + tick, c, fill=outer, width=2)
+        cv.create_line(c, c - tick, c, c - 6, fill=outer, width=2)
+        cv.create_line(c, c + 6, c, c + tick, fill=outer, width=2)
+        ov.after(24, lambda: animate(step + 1))
 
     animate()
 
@@ -424,6 +469,7 @@ class App:
         self.ov_origin = (0, 0)
         self.snap = None
         self.capturing = False
+        self._capture_seq = 0
         self.hint_context = None
         self._last_query = ""
         self._debounce_id = None
@@ -544,15 +590,31 @@ class App:
     def _toggle_popup(self, scan_all=None):
         self._hide_popup() if self.popup_visible else self._show_popup(scan_all)
 
+    def _popup_rect(self):
+        self.popup.update_idletasks()
+        wx, wy = self.popup.winfo_rootx(), self.popup.winfo_rooty()
+        return (wx, wy, wx + self.popup.winfo_width(),
+                wy + self.popup.winfo_height())
+
+    def _capture_mode(self, scan_all=None):
+        all_mon = (scan_all if scan_all is not None else self.all_monitors.get())
+        active_scale = 2.0 if self.upscale.get() else 1.0
+        inactive_scale = (INACTIVE_MONITOR_SCALE
+                          if self.upscale.get() and all_mon else active_scale)
+        return (bool(all_mon), active_scale, inactive_scale)
+
     def _show_popup(self, scan_all=None):
         self._scan_all_override = scan_all
-        self.snap = None
+        mode = self._capture_mode(scan_all)
+        if self.snap is not None and self.snap.get("mode") != mode:
+            self.snap = None
+        self.hint_context = None
         self._last_query = ""
         self.selected = 0
         self.entry.delete(0, "end")
-        status = "Type to search."
-        if scan_all is True:
-            status = "Type to search all monitors."
+        status = "Type to search. Refreshing screen..."
+        if self.snap is not None:
+            status = "Type to search. Cached results ready; refreshing..."
         self.pop_status.config(text=status)
         self._position_popup()
         self.popup.deiconify()
@@ -562,6 +624,7 @@ class App:
         self._suppress_hide = True
         self.popup.after(400, lambda: setattr(self, "_suppress_hide", False))
         self.popup.after(10, self._grab_focus)
+        self._capture_then_filter(force=True)
 
     def _grab_focus(self):
         self._force_foreground(self.popup.winfo_id())
@@ -588,7 +651,6 @@ class App:
         self._close_overlay()
         self.popup.withdraw()
         self.popup_visible = False
-        self.snap = None
         self._scan_all_override = None
         return "break"
 
@@ -701,10 +763,12 @@ class App:
     def _on_type(self, e=None):
         if e is not None and e.keysym in self.NAV_KEYS:
             return
-        # Debounce: act only after typing pauses for 200ms.
+        # OCR is expensive; cached filtering is cheap. Keep the first-capture
+        # debounce modest, but make cache-backed selector/filtering feel live.
         if self._debounce_id is not None:
             self.root.after_cancel(self._debounce_id)
-        self._debounce_id = self.root.after(200, self._do_type)
+        delay = 50 if self.snap is not None else 100
+        self._debounce_id = self.root.after(delay, self._do_type)
 
     def _do_type(self):
         self._debounce_id = None
@@ -713,46 +777,99 @@ class App:
             return
         self._last_query = text
         if not text:
-            self.snap = None
             self._close_overlay()
             self.set_status("Type to search.")
             return
         if self.snap is None:
             if not self.capturing:
                 self._capture_then_filter()   # OCR once, then filter
+            else:
+                self.set_status("Reading screen...")
             return
         self._live_filter()                   # filter cached snapshot (instant)
 
-    def _capture_then_filter(self):
-        """Take ONE OCR snapshot of the screen, off the UI thread, then filter."""
+    def _capture_then_filter(self, force=False):
+        """Refresh OCR off the UI thread.
+
+        All-monitor + upscale mode publishes the active monitor first at 2x,
+        then replaces it with a full-desktop snapshot after lower-scale OCR of
+        the remaining monitors completes.
+        """
+        if self.capturing and not force:
+            return
+        self._capture_seq += 1
+        seq = self._capture_seq
         self.capturing = True
         self.set_status("Reading screen...")
-        all_mon = (self._scan_all_override if self._scan_all_override is not None
-                   else self.all_monitors.get())
-        scale = 2.0 if self.upscale.get() else 1.0
-        # exclude the popup's own rect so it doesn't match itself
-        self.popup.update_idletasks()
-        wx, wy = self.popup.winfo_rootx(), self.popup.winfo_rooty()
-        win_rect = (wx, wy, wx + self.popup.winfo_width(),
-                    wy + self.popup.winfo_height())
+        mode = self._capture_mode(self._scan_all_override)
+        all_mon, active_scale, inactive_scale = mode
+
+        def publish(words, region, complete):
+            snap = _snapshot_from_words(words, region, mode, complete)
+            self.root.after(0, lambda: self._accept_snapshot(seq, snap))
+
+        def fail(ex):
+            self.root.after(0, lambda: self._capture_failed(seq, ex))
 
         def work():
             try:
-                shot, region = grab_screen(all_mon)
-                words = ocr_words(shot, scale)
+                with mss.mss() as sct:
+                    active = dict(_cursor_monitor(sct))
+                    if not all_mon:
+                        shot = sct.grab(active)
+                        words = ocr_words(shot, active_scale)
+                        publish(words, _capture_region(active), True)
+                        return
+
+                    base = dict(sct.monitors[0])
+                    base_region = _capture_region(base)
+                    monitors = [dict(m) for m in sct.monitors[1:]]
+                    active_key = (active["left"], active["top"],
+                                  active["width"], active["height"])
+
+                    ordered = []
+                    for m in monitors:
+                        key = (m["left"], m["top"], m["width"], m["height"])
+                        if key == active_key:
+                            ordered.insert(0, m)
+                        else:
+                            ordered.append(m)
+
+                    all_words = []
+                    line_offset = 0
+                    for idx, mon in enumerate(ordered):
+                        scale = active_scale if idx == 0 else inactive_scale
+                        shot = sct.grab(mon)
+                        words = ocr_words(shot, scale)
+                        moved, line_offset = _offset_words(
+                            words, mon, base_region, line_offset)
+                        all_words.extend(moved)
+                        if idx == 0:
+                            publish(list(all_words), base_region, False)
+                    publish(all_words, base_region, True)
             except Exception as ex:
-                self.capturing = False
-                self.set_status(f"OCR error: {ex}")
-                return
-            for w in words:                   # pre-normalize for fast filtering
-                w["n"] = _norm(w["text"])
-            candidates = build_text_candidates(words)
-            self.snap = {"words": words, "candidates": candidates,
-                         "region": region, "winrect": win_rect}
-            self.capturing = False
-            self.root.after(0, self._live_filter)
+                fail(ex)
 
         threading.Thread(target=work, daemon=True).start()
+
+    def _accept_snapshot(self, seq, snap):
+        if seq != self._capture_seq:
+            return
+        self.snap = snap
+        self.capturing = not snap.get("complete", True)
+        if self.entry.get().strip():
+            self._live_filter()
+            return
+        if snap.get("complete", True):
+            self.set_status("Type to search.")
+        else:
+            self.set_status("Type to search. Active monitor ready; scanning others...")
+
+    def _capture_failed(self, seq, ex):
+        if seq != self._capture_seq:
+            return
+        self.capturing = False
+        self.set_status(f"OCR error: {ex}")
 
     def _refilter(self):
         """Re-run the filter on the cached snapshot (e.g. a toggle changed)."""
@@ -771,7 +888,7 @@ class App:
         whole = self.whole_word.get()
         region = self.snap["region"]
         off_x, off_y = region[0], region[1]
-        wr = self.snap["winrect"]
+        wr = self._popup_rect()
         words = self.snap["words"]
         candidates = self.snap["candidates"]
         matches, self.hint_context, hint_suffix = resolve_selector_matches(
@@ -799,16 +916,21 @@ class App:
 
         if not filtered and not self.debug_all.get():
             self._close_overlay()
-            self.set_status(f"No match for '{text}' ({len(words)} words read).")
+            freshness = " yet" if not self.snap.get("complete", True) else ""
+            self.set_status(f"No match{freshness} for '{text}' "
+                            f"({len(words)} words read).")
             return
         self._ensure_overlay()
         self._draw_overlay()
         if filtered:
             mode = "selector" if hint_suffix else "text"
-            self.set_status(f"{len(filtered)} {mode} match(es) for '{text}'.  "
-                            f"Type selector letters to narrow; Enter = click.")
+            freshness = "" if self.snap.get("complete", True) else " (partial)"
+            self.set_status(f"{len(filtered)} {mode} match(es){freshness} "
+                            f"for '{text}'. Type selector letters; Enter = click.")
         else:
-            self.set_status(f"No match -- showing all {len(words)} OCR words.")
+            freshness = "" if self.snap.get("complete", True) else " yet"
+            self.set_status(f"No match{freshness} -- showing all "
+                            f"{len(words)} OCR words.")
 
     def _recapture(self, e=None):
         """Force a fresh OCR snapshot (use after the screen behind changed)."""

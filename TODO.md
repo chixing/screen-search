@@ -26,5 +26,6 @@
 - Win+Alt+G and Ctrl+Alt+G are **already registered by another app** on this machine (RegisterHotKey err 1409) — do not reuse them.
 - `komorebi.ahk` owns Alt+F. Screen Search does not call `RegisterHotKey`.
 - Prefix + selector matching is implemented in the popup path. Matching ignores spaces/punctuation, builds same-line phrase candidates, and only clicks on Enter.
+- Alt+F starts OCR immediately. Existing OCR cache is reused while a fresh snapshot runs. In all-monitor upscale mode, the active monitor publishes first at 2× and remaining monitors use 1.25× before merging into the full snapshot.
 - Windows OCR **max image dimension is 10000 px** — full-desktop 2× upscale is auto-clamped (~1.37× for the 7280-px desktop); active-monitor gets full 2×.
 - No Screen Search Startup entry is required. The first AHK hotkey press cold-starts the resident.

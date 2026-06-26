@@ -21,15 +21,16 @@ Resident process (single instance, named mutex)
 ### The search pipeline
 1. **Capture** — `mss` grabs all monitors by default, or only the monitor under the cursor if that setting is disabled. Raw BGRA pixels.
 2. **OCR** — Windows' built-in engine (`Windows.Media.Ocr` via `winsdk`). The raw BGRA is turned straight into a `SoftwareBitmap` (no PNG encode/decode). Optional 2× upscale for small text (clamped to the engine's 10000 px max dimension).
-3. **Snapshot cache** — OCR runs **once** when you start typing; every keystroke filters the cached OCR result in memory (200 ms debounce). No re-OCR per keystroke.
+3. **Snapshot cache** — OCR starts as soon as the popup opens. If a previous snapshot exists, it is reused immediately while a fresh snapshot refreshes in the background. Cached filtering uses a short 50 ms debounce; no re-OCR per keystroke.
 4. **Match + select** — OCR words are grouped into same-line phrase candidates. Spaces and punctuation are ignored for matching, so `openf` and `open f` can both match `Open File`. Each highlighted match gets a short selector suffix; typing selector letters disqualifies nonmatching highlights but never clicks.
 5. **Highlight** — a click-through (`WS_EX_TRANSPARENT`) overlay covering the captured region draws a box per match; the selected one is green and other matches are orange. Overlay labels show only the selector suffix.
 6. **Click** — `SendInput` with a short press dwell, after bringing the target window to the foreground. Works across all monitors including negative coordinates.
 
 ### Key design decisions
-- **All-monitor OCR by default** — Alt+F searches the whole virtual desktop. OCR cost scales with pixels, so the Settings checkbox can still disable all-monitor scan if speed matters more.
+- **All-monitor OCR by default** — Alt+F searches the whole virtual desktop. With upscale enabled, the active monitor is OCR'd first at 2×, then the remaining monitors are OCR'd at 1.25× and merged in when complete.
 - **No PNG round-trip** — building the bitmap from raw bytes saved ~28%.
 - **Cache + filter in memory** — prefix/selector filtering as you type stays instant.
+- **Progressive refresh** — broad searches can show active-monitor matches first, then expand when the full all-monitor OCR completes.
 - **Enter is the only action key** — typed selector letters only focus/narrow highlights. They do not click.
 - **Overlays are input-transparent** — so the synthetic click passes through to the real target, and the highlight never steals the click.
 - **Language**: Python is NOT the bottleneck — the OS OCR engine is, and that's language-independent. A C#/Rust rewrite would only help distribution and a flicker-free native overlay, not raw speed.
