@@ -86,6 +86,8 @@ const THEME_ACCENT: (u8, u8, u8) = (251, 146, 60);
 const THEME_STATUS: (u8, u8, u8) = (253, 186, 116);
 const THEME_SELECTED: (u8, u8, u8) = (34, 197, 94);
 const THEME_INK: (u8, u8, u8) = (15, 23, 42);
+const THEME_LABEL: (u8, u8, u8) = (255, 234, 0);
+const THEME_LABEL_BORDER: (u8, u8, u8) = (0, 0, 0);
 const POPUP_W: i32 = 360;
 const POPUP_H: i32 = 72;
 const POPUP_PAD: i32 = 10;
@@ -1373,7 +1375,7 @@ impl App {
                 color,
             );
             if !m.hint.is_empty() {
-                draw_label_background(&mut pixels, self.region.width, self.region.height, m, color);
+                draw_label_background(&mut pixels, self.region.width, self.region.height, m);
             }
         }
 
@@ -1469,13 +1471,7 @@ fn label_rect(m: &Candidate) -> (i32, i32, i32, i32) {
     (left, top, left + width, top + 16)
 }
 
-fn draw_label_background(
-    buf: &mut [u8],
-    width: i32,
-    height: i32,
-    m: &Candidate,
-    rgba: (u8, u8, u8, u8),
-) {
+fn draw_label_background(buf: &mut [u8], width: i32, height: i32, m: &Candidate) {
     let (left, top, right, bottom) = label_rect(m);
     draw_filled_rect(
         buf,
@@ -1485,7 +1481,12 @@ fn draw_label_background(
         top - 1,
         right + 1,
         bottom + 1,
-        (THEME_INK.0, THEME_INK.1, THEME_INK.2, 255),
+        (
+            THEME_LABEL_BORDER.0,
+            THEME_LABEL_BORDER.1,
+            THEME_LABEL_BORDER.2,
+            255,
+        ),
     );
     draw_filled_rect(
         buf,
@@ -1495,7 +1496,7 @@ fn draw_label_background(
         top,
         right,
         bottom,
-        (rgba.0, rgba.1, rgba.2, 255),
+        (THEME_LABEL.0, THEME_LABEL.1, THEME_LABEL.2, 255),
     );
 }
 
@@ -1739,7 +1740,7 @@ fn run_overlay_test() -> Result<()> {
                 3,
                 color,
             );
-            draw_label_background(&mut pixels, region.width, region.height, m, color);
+            draw_label_background(&mut pixels, region.width, region.height, m);
         }
         update_layered_overlay(hwnd, region, &pixels, &matches)?;
         ShowWindow(hwnd, SW_SHOW);
