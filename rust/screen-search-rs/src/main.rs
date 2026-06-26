@@ -86,7 +86,8 @@ const THEME_ACCENT: (u8, u8, u8) = (251, 146, 60);
 const THEME_STATUS: (u8, u8, u8) = (253, 186, 116);
 const THEME_SELECTED: (u8, u8, u8) = (34, 197, 94);
 const THEME_INK: (u8, u8, u8) = (15, 23, 42);
-const THEME_LABEL: (u8, u8, u8) = (255, 234, 0);
+const THEME_LABEL_BG: (u8, u8, u8) = (15, 23, 42);
+const THEME_LABEL_TEXT: (u8, u8, u8) = (255, 234, 0);
 const THEME_LABEL_BORDER: (u8, u8, u8) = (0, 0, 0);
 const POPUP_W: i32 = 360;
 const POPUP_H: i32 = 72;
@@ -1496,7 +1497,7 @@ fn draw_label_background(buf: &mut [u8], width: i32, height: i32, m: &Candidate)
         top,
         right,
         bottom,
-        (THEME_LABEL.0, THEME_LABEL.1, THEME_LABEL.2, 255),
+        (THEME_LABEL_BG.0, THEME_LABEL_BG.1, THEME_LABEL_BG.2, 255),
     );
 }
 
@@ -1636,7 +1637,7 @@ unsafe fn draw_hint_text(hdc: HDC, matches: &[Candidate]) {
     );
     let old_font = SelectObject(hdc, HFONT(font.0));
     SetBkMode(hdc, TRANSPARENT);
-    SetTextColor(hdc, rgb_tuple(THEME_INK));
+    SetTextColor(hdc, rgb_tuple(THEME_LABEL_TEXT));
     for m in matches {
         if m.hint.is_empty() {
             continue;
