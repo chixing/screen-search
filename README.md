@@ -23,7 +23,7 @@ Rust resident process
 ## Search behavior
 
 - Alt+F searches all monitors by default.
-- OCR starts when the popup opens. Existing results can be filtered immediately while fresh OCR finishes in the background.
+- OCR starts when the popup opens. For all-monitor search, every monitor is OCR'd first at 1×, then refined with 2× and 3× passes.
 - Matching is normalized: case, spaces, and punctuation are ignored.
 - Prefix and middle-of-word matching are supported.
 - Same-line words are grouped into phrase candidates, so `openf` can match `Open File`.
@@ -75,7 +75,7 @@ Use this installed path from AutoHotkey or other launchers. The repo `target\rel
 | `screen-search-rs.exe --test-instance --toggle` | Start an isolated manual test instance without the shared singleton/events. |
 | `screen-search-rs.exe --overlay-test` | Run the bounded overlay smoke test. |
 | `screen-search-rs.exe --debug` | Enable trace logging for that resident process. |
-| `screen-search-rs.exe --bench-ocr` | Benchmark capture/OCR at 1×, 1.25×, 2×, and 3×. |
+| `screen-search-rs.exe --bench-ocr` | Benchmark capture/OCR at 1×, 2×, and 3×. |
 | `screen-search-rs.exe --dump-ocr` | Dump recognized OCR words and boxes. |
 | `screen-search-rs.exe --bench-ocr --quiet` | Write diagnostics without showing a completion dialog. |
 
@@ -121,7 +121,7 @@ Screen Search does not register its own global hotkey. AutoHotkey owns Alt+F and
 - Rust removes the previous Python/Tk startup and UI path.
 - Capture uses raw pixels rather than a PNG encode/decode round trip.
 - Filtering existing OCR results happens in memory and should be effectively instant.
-- A broad all-monitor search can show active-monitor results first, then merge wider and higher-quality OCR passes as they finish.
+- A broad all-monitor search shows a 1× result set across every monitor first, then merges higher-quality 2× and 3× passes as they finish.
 - Windows OCR rejects images over 10,000 px in either dimension, so upscale is clamped.
 
 ## Diagnostics

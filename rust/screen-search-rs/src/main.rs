@@ -75,8 +75,7 @@ const EVENT_ALL_NAME: &str = "ScreenSearchRustToggleAllEvent";
 const EVENT_QUIT_NAME: &str = "ScreenSearchRustQuitEvent";
 const MUTEX_NAME: &str = "ScreenSearchRustSingletonMutex";
 
-const INACTIVE_MONITOR_SCALE: f32 = 1.25;
-const HIGH_QUALITY_EXTRA_SCALES: &[f32] = &[2.0, 3.0];
+const ALL_MONITOR_OCR_PASSES: &[(f32, &str)] = &[(1.0, "fast"), (2.0, "medium"), (3.0, "high")];
 const DEFAULT_OVERLAY_ENABLED: bool = true;
 const OVERLAY_TEST_SIZE: (i32, i32) = (360, 180);
 
@@ -1179,18 +1178,13 @@ impl App {
         let hwnd_raw = self.hwnd.0 as isize;
         let all_mon = self.scan_all || force_all;
         let active_scale = if self.upscale { 2.0 } else { 1.0 };
-        let inactive_scale = if self.upscale && all_mon {
-            INACTIVE_MONITOR_SCALE
-        } else {
-            active_scale
-        };
         thread::spawn(move || {
             let hwnd = HWND(hwnd_raw as *mut c_void);
             if let Err(err) = unsafe { RoInitialize(RO_INIT_MULTITHREADED) } {
                 post_capture_failed(hwnd, seq, format!("WinRT init failed: {err:?}"));
                 return;
             }
-            match capture_snapshots(all_mon, active_scale, inactive_scale, hwnd, seq) {
+            match capture_snapshots(all_mon, active_scale, hwnd, seq) {
                 Ok(()) => post_capture_done(hwnd, seq),
                 Err(err) => post_capture_failed(hwnd, seq, err),
             }
@@ -1225,14 +1219,16 @@ impl App {
         if snap.quality == "high" {
             set_text(self.status, "Type to search.");
         } else if snap.complete {
+            set_text(self.status, "Type to search.");
+        } else if snap.quality == "fast" {
             set_text(
                 self.status,
-                "Type to search. Full scan ready; improving OCR...",
+                "Type to search. 1x scan ready; refining at 2x...",
             );
         } else {
             set_text(
                 self.status,
-                "Type to search. Active monitor ready; scanning others...",
+                "Type to search. 2x scan ready; refining at 3x...",
             );
         }
     }
@@ -2180,7 +2176,6 @@ fn make_snapshot(
 fn capture_snapshots(
     all_monitors: bool,
     active_scale: f32,
-    inactive_scale: f32,
     hwnd: HWND,
     seq: u64,
 ) -> std::result::Result<(), String> {
@@ -2193,52 +2188,39 @@ fn capture_snapshots(
     }
 
     let base = virtual_region();
-    let mut all_words = Vec::new();
-    let mut line_offset = 0;
     let ordered = ordered_monitors();
-    for (idx, mon) in ordered.iter().enumerate() {
-        let scale = if idx == 0 {
-            active_scale
+    let mut merged_words = Vec::new();
+    let passes: Vec<(f32, &'static str)> = if active_scale > 1.0 {
+        ALL_MONITOR_OCR_PASSES.to_vec()
+    } else {
+        vec![(1.0, "fast")]
+    };
+    let pass_count = passes.len();
+    for (pass_idx, (scale, quality)) in passes.into_iter().enumerate() {
+        let mut pass_words = Vec::new();
+        let mut line_offset = 0;
+        for mon in &ordered {
+            let shot = capture_region(mon.region)?;
+            let words = ocr_words(&shot, scale)?;
+            let (moved, next) = offset_words(words, mon.region, base, line_offset);
+            line_offset = next;
+            pass_words.extend(moved);
+        }
+        merged_words = if merged_words.is_empty() {
+            pass_words
         } else {
-            inactive_scale
+            merge_ocr_words(&merged_words, &pass_words)
         };
-        let shot = capture_region(mon.region)?;
-        let words = ocr_words(&shot, scale)?;
-        let (moved, next) = offset_words(words, mon.region, base, line_offset);
-        line_offset = next;
-        all_words.extend(moved);
-        if idx == 0 {
-            post_snapshot(
-                hwnd,
-                seq,
-                make_snapshot(all_words.clone(), base, false, "fast"),
-            );
-        }
-    }
-    post_snapshot(
-        hwnd,
-        seq,
-        make_snapshot(all_words.clone(), base, true, "fast"),
-    );
-
-    if active_scale > inactive_scale {
-        let mut hq_words = Vec::new();
-        let mut hq_line_offset = 0;
-        for scale in HIGH_QUALITY_EXTRA_SCALES
-            .iter()
-            .copied()
-            .filter(|s| *s >= active_scale)
-        {
-            for mon in &ordered {
-                let shot = capture_region(mon.region)?;
-                let words = ocr_words(&shot, scale)?;
-                let (moved, next) = offset_words(words, mon.region, base, hq_line_offset);
-                hq_line_offset = next;
-                hq_words.extend(moved);
-            }
-        }
-        let merged = merge_ocr_words(&all_words, &hq_words);
-        post_snapshot(hwnd, seq, make_snapshot(merged, base, true, "high"));
+        post_snapshot(
+            hwnd,
+            seq,
+            make_snapshot(
+                merged_words.clone(),
+                base,
+                pass_idx + 1 == pass_count,
+                quality,
+            ),
+        );
     }
     Ok(())
 }
@@ -2252,7 +2234,10 @@ fn run_ocr_diagnostics(args: &[String], bench: bool) -> Result<()> {
         ordered_monitors()
     };
     let scales = if bench {
-        vec![1.0, 1.25, 2.0, 3.0]
+        ALL_MONITOR_OCR_PASSES
+            .iter()
+            .map(|(scale, _)| *scale)
+            .collect()
     } else if args_has(args, "--no-upscale") {
         vec![1.0]
     } else {
