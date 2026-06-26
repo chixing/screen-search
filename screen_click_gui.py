@@ -887,18 +887,21 @@ class App:
             y1 = m["y"] + self.off_y - oy
             x2, y2 = x1 + m["w"], y1 + m["h"]
             sel = (i == self.selected)
-            color = "#00ff66" if sel else "#ff3030"
+            color = "#00e5ff" if sel else "#ff2bd6"
             cv.create_rectangle(x1 - 3, y1 - 3, x2 + 3, y2 + 3,
                                 outline=color, width=4 if sel else 2)
-            selector = m.get("selector")
-            if selector:
+            hint = m.get("hint")
+            if hint:
                 label_y = y1 - 7 if y1 > 24 else y2 + 18
+                label = hint.upper()
+                bg = "#ffff00" if sel else "#000000"
+                fg = "#000000" if sel else "#ffff00"
                 text_id = cv.create_text(
-                    x1 - 3, label_y, text=selector.upper(), anchor="sw",
-                    fill="#ffffff", font=("Segoe UI", 10, "bold"))
+                    x1 - 3, label_y, text=label, anchor="sw",
+                    fill=fg, font=("Segoe UI", 13, "bold"))
                 bx1, by1, bx2, by2 = cv.bbox(text_id)
                 cv.create_rectangle(bx1 - 4, by1 - 2, bx2 + 4, by2 + 2,
-                                    fill=color, outline=color)
+                                    fill=bg, outline="#ffff00", width=2)
                 cv.tag_raise(text_id)
 
     def _close_overlay(self):

@@ -24,7 +24,7 @@ Resident process (single instance, named mutex)
 2. **OCR** — Windows' built-in engine (`Windows.Media.Ocr` via `winsdk`). The raw BGRA is turned straight into a `SoftwareBitmap` (no PNG encode/decode). Optional 2× upscale for small text (clamped to the engine's 10000 px max dimension).
 3. **Snapshot cache** — OCR runs **once** when you start typing; every keystroke filters the cached OCR result in memory (200 ms debounce). No re-OCR per keystroke.
 4. **Match + select** — OCR words are grouped into same-line phrase candidates. Spaces and punctuation are ignored for matching, so `openf` and `open f` can both match `Open File`. Each highlighted match gets a short selector suffix; typing selector letters disqualifies nonmatching highlights but never clicks.
-5. **Highlight** — a click-through (`WS_EX_TRANSPARENT`) overlay covering the captured monitor draws a red box per match; the selected one is green. Overlay labels show the normalized prefix plus selector suffix.
+5. **Highlight** — a click-through (`WS_EX_TRANSPARENT`) overlay covering the captured monitor draws a box per match; the selected one is cyan and other matches are magenta. Overlay labels show only the selector suffix.
 6. **Click** — `SendInput` with a short press dwell, after bringing the target window to the foreground. Works across all monitors including negative coordinates.
 
 ### Key design decisions
