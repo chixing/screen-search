@@ -887,21 +887,23 @@ class App:
             y1 = m["y"] + self.off_y - oy
             x2, y2 = x1 + m["w"], y1 + m["h"]
             sel = (i == self.selected)
-            color = "#00e5ff" if sel else "#ff2bd6"
+            color = "#3b82f6" if sel else "#f8fafc"
+            cv.create_rectangle(x1 - 4, y1 - 4, x2 + 4, y2 + 4,
+                                outline="#111827", width=5 if sel else 3)
             cv.create_rectangle(x1 - 3, y1 - 3, x2 + 3, y2 + 3,
-                                outline=color, width=4 if sel else 2)
+                                outline=color, width=3 if sel else 2)
             hint = m.get("hint")
             if hint:
-                label_y = y1 - 7 if y1 > 24 else y2 + 18
+                label_y = y1 - 6 if y1 > 22 else y2 + 16
                 label = hint.upper()
-                bg = "#ffff00" if sel else "#000000"
-                fg = "#000000" if sel else "#ffff00"
+                bg = "#2563eb" if sel else "#111827"
+                fg = "#ffffff"
                 text_id = cv.create_text(
                     x1 - 3, label_y, text=label, anchor="sw",
-                    fill=fg, font=("Segoe UI", 13, "bold"))
+                    fill=fg, font=("Segoe UI", 10, "bold"))
                 bx1, by1, bx2, by2 = cv.bbox(text_id)
-                cv.create_rectangle(bx1 - 4, by1 - 2, bx2 + 4, by2 + 2,
-                                    fill=bg, outline="#ffff00", width=2)
+                cv.create_rectangle(bx1 - 3, by1 - 1, bx2 + 3, by2 + 1,
+                                    fill=bg, outline="#f8fafc", width=1)
                 cv.tag_raise(text_id)
 
     def _close_overlay(self):
