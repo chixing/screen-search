@@ -10,7 +10,6 @@ Flow:
 Visual feedback:
   orange box   = a match
   green box    = currently selected match
-  small pulse  = the click actually firing
 
 OCR uses Windows' BUILT-IN engine (Windows.Media.Ocr via winsdk).
 Overlays are input-transparent (WS_EX_TRANSPARENT) so they never eat the click.
@@ -407,24 +406,9 @@ def search(query, all_monitors=False, whole_word=True, scale=1.0):
     return matches, words, region
 
 
-# ---------- click confirmation pulse ------------------------------
+# ---------- click confirmation ------------------------------------
 def flash_click(root, x, y):
-    size = 24
-    ov = tk.Toplevel(root)
-    ov.overrideredirect(True)
-    ov.attributes("-topmost", True)
-    ov.config(bg="white")
-    ov.attributes("-transparentcolor", "white")
-    ov.geometry(f"{size}x{size}+{int(x) - size // 2}+{int(y) - size // 2}")
-    cv = tk.Canvas(ov, bg="white", highlightthickness=0)
-    cv.pack(fill="both", expand=True)
-    make_click_through(ov)
-    c = size // 2
-    cv.create_oval(c - 8, c - 8, c + 8, c + 8,
-                   outline="#22c55e", width=2)
-    cv.create_oval(c - 2, c - 2, c + 2, c + 2,
-                   fill="#22c55e", outline="")
-    ov.after(90, ov.destroy)
+    pass
 
 
 # ---------- GUI ---------------------------------------------------
