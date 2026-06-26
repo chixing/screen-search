@@ -24,6 +24,7 @@ The project uses Python 3.14 from `C:\Python314`. Installed dependencies are `ms
 - `--toggle`: signal the resident process through the named Win32 event.
 
 Alt+F intentionally overrides the global File-menu accelerator.
+`install_startup.ps1` installs or repairs the current-user Startup shortcut and starts the resident.
 
 ## Current priority
 

@@ -22,7 +22,6 @@
 
 ## Packaging / deployment
 - [ ] **PyInstaller** `--noconsole --onefile` → `ScreenSearch.exe`. Then komorebi `ignore-rule exe ScreenSearch.exe` becomes precise, and no Python dependency.
-- [ ] **Autostart** the resident with komorebi (the `--background` Run line) or a Startup shortcut.
 - [ ] **komorebi ignore rule** for the Settings window if you don't want it tiled (verify the `ignore_rules` schema against the installed komorebi version).
 
 ## Known facts / gotchas
@@ -30,3 +29,4 @@
 - Alt+F intentionally overrides the global File-menu accelerator. Alt+Shift+F is reserved for forced all-monitor search.
 - Windows OCR **max image dimension is 10000 px** — full-desktop 2× upscale is auto-clamped (~1.37× for the 7280-px desktop); active-monitor gets full 2×.
 - The MCP keystroke injector does **not** trigger global `RegisterHotKey` hotkeys (it posts to the focused window); `keybd_event`-level injection does. Don't trust MCP `Shortcut` to test global hotkeys.
+- The hotkeys require the resident process. `install_startup.ps1` installs a user Startup shortcut and starts the resident.

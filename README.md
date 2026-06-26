@@ -50,6 +50,16 @@ pip install mss pillow winsdk pystray
 | `pythonw screen_click_gui.py --background` | Resident, **hidden**, lives in the tray. Use for autostart. |
 | `python screen_click_gui.py --toggle` | Signals the running resident to toggle the search popup (or cold-starts one). For komorebi.ahk. |
 
+### Startup installation
+
+Alt+F and Alt+Shift+F only work while the resident process is running. Install or repair the Windows Startup shortcut with:
+
+```powershell
+.\install_startup.ps1
+```
+
+The installer creates `Screen Search.lnk` in the current user's Startup folder, targets this project directory, restarts any existing Screen Search process, and launches the resident hidden.
+
 ### Using the search popup
 - **Alt+F** opens normal search using the configured monitor setting.
 - **Alt+Shift+F** opens search and forces an all-monitor scan for that session.
@@ -77,10 +87,8 @@ Matching currently operates on individual OCR words. A query containing spaces d
 The user runs **komorebi.ahk** (AutoHotkey). Two options for triggering:
 
 1. **Built-in hotkeys** — Alt+F for normal search and Alt+Shift+F to force all monitors.
-2. **AHK-bound `--toggle`** — keeps all keybinds in one file. Autostart the resident hidden, then bind a key:
+2. **AHK-bound `--toggle`** — keeps an optional trigger in the AHK file:
 ```ahk
-; autostart (run hidden):
-Run('"C:\Python314\pythonw.exe" "C:\Users\chix\workspace\screen-search\screen_click_gui.py" --background',, "Hide")
 ; optional alternative binding to toggle search:
 ^!f::Run('"C:\Python314\pythonw.exe" "C:\Users\chix\workspace\screen-search\screen_click_gui.py" --toggle',, "Hide")
 ```
