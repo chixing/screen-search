@@ -305,6 +305,7 @@ HINT_KEYS = "asdfjklghqwertyuiopzxcvbnm"
 MAX_PHRASE_WORDS = 6
 INACTIVE_MONITOR_SCALE = 1.25
 HIGH_QUALITY_MONITOR_SCALE = 3.0
+HIGH_QUALITY_EXTRA_SCALES = (2.0, HIGH_QUALITY_MONITOR_SCALE)
 
 
 def _candidate_from_words(parts):
@@ -867,16 +868,19 @@ class App:
 
                     if active_scale > inactive_scale:
                         try:
-                            high_quality_scale = max(
-                                active_scale, HIGH_QUALITY_MONITOR_SCALE)
                             hq_words = []
                             line_offset = 0
-                            for mon in ordered:
-                                shot = sct.grab(mon)
-                                words = ocr_words(shot, high_quality_scale)
-                                moved, line_offset = _offset_words(
-                                    words, mon, base_region, line_offset)
-                                hq_words.extend(moved)
+                            scales = tuple(dict.fromkeys(
+                                max(active_scale, scale)
+                                for scale in HIGH_QUALITY_EXTRA_SCALES
+                            ))
+                            for scale in scales:
+                                for mon in ordered:
+                                    shot = sct.grab(mon)
+                                    words = ocr_words(shot, scale)
+                                    moved, line_offset = _offset_words(
+                                        words, mon, base_region, line_offset)
+                                    hq_words.extend(moved)
                             publish(
                                 merge_ocr_words(all_words, hq_words),
                                 base_region,
