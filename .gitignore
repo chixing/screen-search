@@ -12,6 +12,7 @@ venv/
 # Build and packaging output
 build/
 dist/
+target/
 *.egg-info/
 *.spec
 

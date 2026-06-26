@@ -2,7 +2,9 @@
 
 A Windows utility that lets you find visible on-screen text with OCR and click it from the keyboard. Summon a search box with a hotkey, type visible text from a word or phrase, narrow with the displayed selector letters, and press Enter to click the selected result.
 
-Main app: [`screen_click_gui.py`](screen_click_gui.py). Python 3.14, Windows only. Matcher tests live in [`test_matcher.py`](test_matcher.py).
+Stable app: [`screen_click_gui.py`](screen_click_gui.py). Python 3.14, Windows only. Matcher tests live in [`test_matcher.py`](test_matcher.py).
+
+Rust port: [`rust/screen-search-rs`](rust/screen-search-rs). This is the native rewrite branch implementation: Win32 resident/popup, GDI screen capture, Windows Runtime OCR, Rust matcher/hints, and `SendInput` clicking. The native overlay is currently disabled because the first layered-window smoke test produced an opaque full-screen surface when transparency failed.
 
 ---
 
@@ -10,9 +12,9 @@ Main app: [`screen_click_gui.py`](screen_click_gui.py). Python 3.14, Windows onl
 
 ```
 Resident process (single instance, named mutex)
-├─ System tray icon (pystray)         → Search / Settings / Quit
-├─ Settings window (Tk)               → config toggles; close = hide to tray
-├─ Search popup (borderless tool win) → the live search box
+├─ System tray icon (Python only)     → Search / Settings / Quit
+├─ Settings window (Python only)      → config toggles; close = hide to tray
+├─ Search popup                       → the live search box
 ├─ Highlight overlay (click-through)  → boxes over matches
 ├─ AutoHotkey  Alt+F                  → --toggle
 └─ Named Win32 events                 → signal/cold-start the resident
@@ -33,7 +35,7 @@ Resident process (single instance, named mutex)
 - **Progressive refresh** — broad searches can show active-monitor matches first, expand when the fast all-monitor OCR completes, then improve again when the high-quality pass finishes.
 - **Enter is the only action key** — typed selector letters only focus/narrow highlights. They do not click.
 - **Overlays are input-transparent** — so the synthetic click passes through to the real target, and the highlight never steals the click.
-- **Language**: Python is NOT the bottleneck — the OS OCR engine is, and that's language-independent. A C#/Rust rewrite would only help distribution and a flicker-free native overlay, not raw speed.
+- **Language**: OCR remains the main cost, but the Rust port removes Python/Tk from the hot path and should materially improve cold start, resident toggle latency, idle footprint, and packaging.
 
 ---
 
@@ -45,6 +47,13 @@ pip install mss pillow winsdk pystray
 ```
 (Windows built-in OCR language pack must be present — it is by default.)
 
+Rust port:
+
+```powershell
+cd rust\screen-search-rs
+cargo build --release
+```
+
 ### Launch modes
 | Command | Behaviour |
 |---|---|
@@ -52,6 +61,16 @@ pip install mss pillow winsdk pystray
 | `pythonw screen_click_gui.py --background` | Resident, **hidden**, lives in the tray. Use for autostart. |
 | `python screen_click_gui.py --toggle` | Signals the running resident to toggle the search popup (or cold-starts one). For komorebi.ahk. |
 | `python screen_click_gui.py --toggle-all` | Compatibility/debug path for forcing an all-monitor search. |
+
+Rust equivalents:
+
+| Command | Behaviour |
+|---|---|
+| `rust\screen-search-rs\target\release\screen-search-rs.exe --toggle` | Signals the running Rust resident or cold-starts it and opens search. |
+| `rust\screen-search-rs\target\release\screen-search-rs.exe --toggle-all` | Compatibility/debug path for forcing all-monitor search. |
+| `rust\screen-search-rs\target\release\screen-search-rs.exe --quit` | Gracefully exits the Rust resident. |
+
+The Rust port currently uses fixed defaults: scan all monitors on, contains matching on, 2× upscale on, debug OCR boxes off. Tray/settings persistence are still Python-only. Highlight overlay rendering is disabled until the layered-window transparency path is replaced or proven safe.
 
 ### Using the search popup
 - **Alt+F** is owned by `komorebi.ahk` and runs `--toggle`.
@@ -98,12 +117,14 @@ The popup is a **borderless tool window with no taskbar button**, so komorebi le
 ---
 
 ## Footprint
-Resident idle: **~60 MB RAM, ~0 % CPU**. Two kernel-blocked threads wait on the normal and all-monitor events; a 25 ms Tk timer bridges them to the UI loop. No network/disk/GPU.
+Python resident idle: **~60 MB RAM, ~0 % CPU**. Two kernel-blocked threads wait on the normal and all-monitor events; a 25 ms Tk timer bridges them to the UI loop. No network/disk/GPU.
 
 Alt+F latency has two parts:
 
 - The resident checks its event queue on that 25 ms timer.
 - `komorebi.ahk` currently launches `pythonw screen_click_gui.py --toggle` to signal the resident, which adds Python process startup/import overhead. Moving the named-event signal directly into AHK would remove most of that remaining resident-toggle latency.
+
+The Rust port keeps the same named events and mutex names, so the AutoHotkey integration can switch from launching Python to launching `screen-search-rs.exe --toggle`. A later AHK direct `SetEvent` path can still remove even the tiny helper process cost.
 
 ---
 
@@ -117,6 +138,15 @@ Run these after code edits:
 python -c "import ast; ast.parse(open('screen_click_gui.py', encoding='utf-8').read())"
 python -m py_compile screen_click_gui.py test_matcher.py
 python -m unittest test_matcher.py
+```
+
+Rust:
+
+```powershell
+cd rust\screen-search-rs
+cargo fmt --check
+cargo test
+cargo build --release
 ```
 
 Restart the resident:
@@ -140,13 +170,16 @@ Start-Process C:\Python314\pythonw.exe `
 - The OS OCR engine is the main performance cost.
 - Per-monitor DPI awareness is not implemented yet. Mixed monitor scaling can cause overlay/click coordinate drift.
 - Do not add UI Automation; OCR is the intended recognition and targeting mechanism.
+- Rust port currently has no tray/settings window.
+- Rust overlay rendering is disabled for safety after a failed smoke test made the full-screen overlay opaque.
 
 ### Remaining work
 
-- Physical UX pass for text + selector mode.
-- Confirm physical Alt+F cold-start/resident signaling and default all-monitor capture.
+- Replace or fix the Rust overlay implementation before any more runtime smoke tests. Do not create a virtual-desktop-sized layered window unless transparency is proven on a small test window first.
+- Physical UX pass for the Rust popup/overlay after the overlay is safe.
+- Confirm physical Alt+F cold-start/resident signaling and default all-monitor capture in Rust.
 - Add OCR preprocessing variants for terminal/dark/thin text.
 - Persist settings across restarts.
-- Optional packaging with PyInstaller.
+- Optional packaging for the Rust executable.
 
 ---
