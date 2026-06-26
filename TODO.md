@@ -6,8 +6,8 @@
 
 ## Verification
 
-- [ ] **Confirm physical Alt+F opens the popup.** The focus-loss auto-hide was dismissing the popup the instant it opened when summoned from the background (Windows blocks `SetForegroundWindow` from a background process). Fixed with `AttachThreadInput` foreground grab + 400 ms grace in `_force_foreground` / `_show_popup`. Verified the hotkey *fires* in isolation; needs a real keypress confirmation that the popup now **stays and accepts typing**.
-- [ ] **Confirm physical Alt+Shift+F scans all monitors.** It should force all-monitor capture for that popup session without changing the configured checkbox state.
+- [ ] **Confirm physical Alt+F cold-start and resident signaling.** The first AHK invocation should launch the resident and open a focused popup; later presses should signal the existing process.
+- [ ] **Confirm physical Alt+Shift+F scans all monitors.** The AHK `--toggle-all` command should force all-monitor capture for that popup session without changing the configured checkbox state.
 
 ## Robustness
 - [ ] **Per-monitor DPI scaling.** Process is not DPI-aware. If monitors run at different scaling (e.g. 100% + 150%), captured pixels and click/overlay coords can drift on the scaled monitor. Fix: `SetProcessDpiAwarenessContext(PER_MONITOR_AWARE_V2)` at startup, then re-verify overlay/cursor math. (Currently fine because relevant monitors are effectively 100%.)
@@ -17,7 +17,6 @@
 ## Features
 - [ ] **OCR preprocessing for terminals.** Upscale helps; add contrast/threshold/invert for light-on-dark terminal text (Windows OCR is tuned for dark-on-light).
 - [ ] **Right-click / double-click** options on the selected match.
-- [ ] **Configurable hotkey** in Settings (text field), persisted to a small config file.
 - [ ] **Persist settings** (checkbox states) across restarts — currently in-memory only.
 
 ## Packaging / deployment
@@ -26,7 +25,6 @@
 
 ## Known facts / gotchas
 - Win+Alt+G and Ctrl+Alt+G are **already registered by another app** on this machine (RegisterHotKey err 1409) — do not reuse them.
-- Alt+F intentionally overrides the global File-menu accelerator. Alt+Shift+F is reserved for forced all-monitor search.
+- `komorebi.ahk` owns Alt+F and Alt+Shift+F. Screen Search does not call `RegisterHotKey`.
 - Windows OCR **max image dimension is 10000 px** — full-desktop 2× upscale is auto-clamped (~1.37× for the 7280-px desktop); active-monitor gets full 2×.
-- The MCP keystroke injector does **not** trigger global `RegisterHotKey` hotkeys (it posts to the focused window); `keybd_event`-level injection does. Don't trust MCP `Shortcut` to test global hotkeys.
-- The hotkeys require the resident process. `install_startup.ps1` installs a user Startup shortcut and starts the resident.
+- No Screen Search Startup entry is required. The first AHK hotkey press cold-starts the resident.

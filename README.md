@@ -14,9 +14,9 @@ Resident process (single instance, named mutex)
 ├─ Settings window (Tk)               → config toggles; close = hide to tray
 ├─ Search popup (borderless tool win) → the live search box
 ├─ Highlight overlay (click-through)  → red boxes over matches
-├─ Built-in hotkey  Alt+F             → normal search
-├─ Built-in hotkey  Alt+Shift+F       → force all-monitor search
-└─ External trigger  --toggle         → named Win32 event, for komorebi.ahk
+├─ AutoHotkey  Alt+F                  → --toggle
+├─ AutoHotkey  Alt+Shift+F            → --toggle-all
+└─ Named Win32 events                 → signal/cold-start the resident
 ```
 
 ### The search pipeline
@@ -49,20 +49,11 @@ pip install mss pillow winsdk pystray
 | `python screen_click_gui.py` | Resident; shows the Settings window. |
 | `pythonw screen_click_gui.py --background` | Resident, **hidden**, lives in the tray. Use for autostart. |
 | `python screen_click_gui.py --toggle` | Signals the running resident to toggle the search popup (or cold-starts one). For komorebi.ahk. |
-
-### Startup installation
-
-Alt+F and Alt+Shift+F only work while the resident process is running. Install or repair the Windows Startup shortcut with:
-
-```powershell
-.\install_startup.ps1
-```
-
-The installer creates `Screen Search.lnk` in the current user's Startup folder, targets this project directory, restarts any existing Screen Search process, and launches the resident hidden.
+| `python screen_click_gui.py --toggle-all` | Signals the resident or cold-starts an all-monitor search. |
 
 ### Using the search popup
-- **Alt+F** opens normal search using the configured monitor setting.
-- **Alt+Shift+F** opens search and forces an all-monitor scan for that session.
+- **Alt+F** is owned by `komorebi.ahk` and runs `--toggle`.
+- **Alt+Shift+F** is owned by `komorebi.ahk` and runs `--toggle-all`.
 - Tray → Search and `--toggle` use the configured monitor setting.
 - Type to filter (substring by default). Matches highlight live.
 - **Tab / Shift+Tab** cycle the selection (green box).
@@ -84,14 +75,21 @@ Matching currently operates on individual OCR words. A query containing spaces d
 
 ## Komorebi integration
 
-The user runs **komorebi.ahk** (AutoHotkey). Two options for triggering:
+The active `komorebi.ahk` is the sole owner of both hotkeys:
 
-1. **Built-in hotkeys** — Alt+F for normal search and Alt+Shift+F to force all monitors.
-2. **AHK-bound `--toggle`** — keeps an optional trigger in the AHK file:
 ```ahk
-; optional alternative binding to toggle search:
-^!f::Run('"C:\Python314\pythonw.exe" "C:\Users\chix\workspace\screen-search\screen_click_gui.py" --toggle',, "Hide")
+ScreenSearch(mode) {
+    script := EnvGet("USERPROFILE") . "\workspace\screen-search\screen_click_gui.py"
+    command := Format('"C:\Python314\pythonw.exe" "{}" {}', script, mode)
+    Run(command, , "Hide")
+}
+
+!f:: ScreenSearch("--toggle")
+!+f:: ScreenSearch("--toggle-all")
 ```
+
+The first press cold-starts Screen Search. Later presses signal the resident through named Win32 events. Screen Search does not register global hotkeys and does not need its own Windows Startup entry.
+
 The popup is a **borderless tool window with no taskbar button**, so komorebi leaves it floating (untiled) automatically. The Settings window IS a normal window (komorebi may tile it) — add an ignore rule if that bothers you.
 
 **Alt+F intentionally shadows the global File-menu accelerator.**
@@ -99,7 +97,7 @@ The popup is a **borderless tool window with no taskbar button**, so komorebi le
 ---
 
 ## Footprint
-Resident idle: **~60 MB RAM, ~0 % CPU**. One kernel-blocked thread waits on the toggle event (free); a 150 ms timer bridges that thread to the Tk loop (the only idle heartbeat). No network/disk/GPU.
+Resident idle: **~60 MB RAM, ~0 % CPU**. Two kernel-blocked threads wait on the normal and all-monitor events; a 150 ms timer bridges them to the Tk loop. No network/disk/GPU.
 
 ---
 

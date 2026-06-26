@@ -14,17 +14,18 @@ The project uses Python 3.14 from `C:\Python314`. Installed dependencies are `ms
 
 ## Current controls
 
-- Alt+F: open normal search using the configured monitor scope.
-- Alt+Shift+F: open search and force all-monitor capture for that session.
+- Alt+F: `komorebi.ahk` runs `--toggle`.
+- Alt+Shift+F: `komorebi.ahk` runs `--toggle-all`.
 - Tab / Shift+Tab: cycle matches.
 - Enter: click the selected match.
 - Escape: dismiss.
 - F5: recapture.
 - `--background`: start hidden in the tray.
-- `--toggle`: signal the resident process through the named Win32 event.
+- `--toggle`: signal or cold-start normal search.
+- `--toggle-all`: signal or cold-start all-monitor search.
 
 Alt+F intentionally overrides the global File-menu accelerator.
-`install_startup.ps1` installs or repairs the current-user Startup shortcut and starts the resident.
+AutoHotkey owns both global hotkeys. Screen Search does not register hotkeys and has no Windows Startup entry; the first hotkey press cold-starts it.
 
 ## Current priority
 
@@ -59,11 +60,10 @@ Start-Process C:\Python314\pythonw.exe `
   -WindowStyle Hidden
 ```
 
-Physical verification is still required for Alt+F focus retention and Alt+Shift+F all-monitor capture. Synthetic window-level keystrokes do not reliably trigger `RegisterHotKey`; use a physical keypress or Win32 `keybd_event`.
+Physical verification is still required for the AHK cold-start path, focus retention, and Alt+Shift+F all-monitor capture.
 
 ## Important constraints
 
 - Windows OCR rejects images over 10,000 pixels in either dimension; `_effective_scale` clamps upscale accordingly.
 - Overlay windows must remain `WS_EX_TRANSPARENT`, and the color key must be reapplied through `make_click_through`.
 - The OS OCR engine is the main performance cost.
-- Win+Alt+G and Ctrl+Alt+G are already registered by another application on this machine.

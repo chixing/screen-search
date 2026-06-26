@@ -43,16 +43,16 @@ user32 = ctypes.windll.user32
 kernel32 = ctypes.windll.kernel32
 user32.GetForegroundWindow.restype = wintypes.HWND  # avoid 64-bit handle truncation
 
-# ---------- single-instance + external "--toggle" trigger (for AHK) ----
-EVENT_NAME = "ScreenSearchToggleEvent"      # AHK signals this; resident waits
-MUTEX_NAME = "ScreenSearchSingletonMutex"   # ensures one resident instance
+# ---------- single-instance + external triggers (owned by AutoHotkey) ----
+EVENT_NAME = "ScreenSearchToggleEvent"
+EVENT_ALL_NAME = "ScreenSearchToggleAllEvent"
+MUTEX_NAME = "ScreenSearchSingletonMutex"
 
 
-def _signal_toggle():
-    """Open the resident app's named event and pulse it. True if a resident
-    was found and signalled."""
+def _signal_event(event_name):
+    """Pulse a resident app event. True if a resident was found."""
     EVENT_MODIFY_STATE = 0x0002
-    h = kernel32.OpenEventW(EVENT_MODIFY_STATE, False, EVENT_NAME)
+    h = kernel32.OpenEventW(EVENT_MODIFY_STATE, False, event_name)
     if not h:
         return False
     kernel32.SetEvent(h)
@@ -60,12 +60,13 @@ def _signal_toggle():
     return True
 
 
-def make_toggle_command():
-    """The exact command to bind in komorebi.ahk."""
+def make_toggle_command(toggle_all=False):
+    """The command invoked by komorebi.ahk."""
     pyw = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
     if not os.path.exists(pyw):
         pyw = sys.executable
-    return f'"{pyw}" "{os.path.abspath(__file__)}" --toggle'
+    mode = "--toggle-all" if toggle_all else "--toggle"
+    return f'"{pyw}" "{os.path.abspath(__file__)}" {mode}'
 
 # ---------- real mouse click via SendInput (works across ALL monitors) ----
 MOUSEEVENTF_LEFTDOWN = 0x0002
@@ -319,7 +320,6 @@ class App:
         self._build_popup()
         self._build_tray()
         self._start_toggle_listener()
-        self._start_hotkey()
         self._poll_toggle()
         if background:
             self.root.withdraw()  # start hidden -> live only in the tray
@@ -335,9 +335,9 @@ class App:
         frm = ttk.Frame(root, padding=14)
         frm.pack(fill="both", expand=True)
 
-        ttk.Label(frm, text="Hotkeys:  Alt + F  |  Alt + Shift + F (all monitors)",
+        ttk.Label(frm, text="AutoHotkey:  Alt + F  |  Alt + Shift + F (all monitors)",
                   font=("Segoe UI", 10, "bold")).pack(anchor="w")
-        ttk.Label(frm, text="Or bind a key in komorebi.ahk to this command:",
+        ttk.Label(frm, text="Normal search command:",
                   foreground="#555").pack(anchor="w", pady=(6, 0))
         cmd = ttk.Entry(frm)
         cmd.insert(0, make_toggle_command())
@@ -516,46 +516,27 @@ class App:
     def _hide_settings(self):
         self.root.withdraw()
 
-    # -- built-in global hotkeys ----------------------------------
-    def _start_hotkey(self):
-        threading.Thread(target=self._hotkey_loop, daemon=True).start()
-
-    def _hotkey_loop(self):
-        WM_HOTKEY = 0x0312
-        MOD_ALT, MOD_SHIFT, MOD_NOREPEAT = 0x0001, 0x0004, 0x4000
-        VK_F = 0x46
-        registered = []
-        if user32.RegisterHotKey(None, 1, MOD_ALT | MOD_NOREPEAT, VK_F):
-            registered.append(1)
-        if user32.RegisterHotKey(
-                None, 2, MOD_ALT | MOD_SHIFT | MOD_NOREPEAT, VK_F):
-            registered.append(2)
-        if not registered:
-            self.set_settings_status(
-                "Could not register Alt+F or Alt+Shift+F. "
-                "Use the komorebi --toggle binding instead.")
-            return
-        if len(registered) == 1:
-            missing = "Alt+Shift+F" if registered[0] == 1 else "Alt+F"
-            self.set_settings_status(
-                f"Could not register {missing} (already in use).")
-        msg = wintypes.MSG()
-        while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) != 0:
-            if msg.message == WM_HOTKEY:
-                self._toggle_q.put(
-                    "toggle_all" if msg.wParam == 2 else "toggle")
-
-    # -- external trigger (AHK runs `... --toggle`, which pulses our event) --
+    # -- external triggers from komorebi.ahk ----------------------
     def _start_toggle_listener(self):
-        # auto-reset event: AHK's --toggle process SetEvent()s it; we wake.
         self._toggle_event = kernel32.CreateEventW(None, False, False, EVENT_NAME)
-        threading.Thread(target=self._toggle_wait_loop, daemon=True).start()
+        self._toggle_all_event = kernel32.CreateEventW(
+            None, False, False, EVENT_ALL_NAME)
+        threading.Thread(
+            target=self._toggle_wait_loop,
+            args=(self._toggle_event, "toggle"),
+            daemon=True,
+        ).start()
+        threading.Thread(
+            target=self._toggle_wait_loop,
+            args=(self._toggle_all_event, "toggle_all"),
+            daemon=True,
+        ).start()
 
-    def _toggle_wait_loop(self):
+    def _toggle_wait_loop(self, event_handle, action):
         INFINITE = 0xFFFFFFFF
         while True:
-            if kernel32.WaitForSingleObject(self._toggle_event, INFINITE) == 0:
-                self._toggle_q.put("toggle")
+            if kernel32.WaitForSingleObject(event_handle, INFINITE) == 0:
+                self._toggle_q.put(action)
 
     def _poll_toggle(self):
         actions = []
@@ -579,11 +560,6 @@ class App:
         self.root.after(150, self._poll_toggle)
 
     def _quit(self):
-        try:
-            user32.UnregisterHotKey(None, 1)
-            user32.UnregisterHotKey(None, 2)
-        except Exception:
-            pass
         if self._tray_icon is not None:
             self._tray_icon.stop()
         self.root.destroy()
@@ -798,22 +774,24 @@ class App:
 
 def main():
     toggle = "--toggle" in sys.argv
+    toggle_all = "--toggle-all" in sys.argv
     background = "--background" in sys.argv
     # If a resident instance exists, just signal it and exit.
-    if toggle and _signal_toggle():
+    event_name = EVENT_ALL_NAME if toggle_all else EVENT_NAME
+    if (toggle or toggle_all) and _signal_event(event_name):
         return
     # Become the single resident instance (named mutex).
     kernel32.CreateMutexW(None, False, MUTEX_NAME)
     if kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
-        if toggle:
-            _signal_toggle()
+        if toggle or toggle_all:
+            _signal_event(event_name)
         return
     root = tk.Tk()
-    # --background starts hidden in the tray; --toggle with no resident yet
-    # starts the app and opens the search immediately.
-    app = App(root, background=background or toggle)
-    if toggle:
-        root.after(300, app._show_popup)
+    # A toggle command with no resident cold-starts it and opens immediately.
+    app = App(root, background=background or toggle or toggle_all)
+    if toggle or toggle_all:
+        root.after(300, lambda: app._show_popup(scan_all=True)
+                   if toggle_all else app._show_popup())
     root.mainloop()
 
 
