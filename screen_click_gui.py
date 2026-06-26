@@ -409,7 +409,7 @@ def search(query, all_monitors=False, whole_word=True, scale=1.0):
 
 # ---------- click confirmation pulse ------------------------------
 def flash_click(root, x, y):
-    size = 64
+    size = 24
     ov = tk.Toplevel(root)
     ov.overrideredirect(True)
     ov.attributes("-topmost", True)
@@ -420,20 +420,11 @@ def flash_click(root, x, y):
     cv.pack(fill="both", expand=True)
     make_click_through(ov)
     c = size // 2
-
-    def animate(step=0):
-        cv.delete("all")
-        if step > 4:
-            ov.destroy()
-            return
-        r = 7 + step * 4
-        cv.create_oval(c - r, c - r, c + r, c + r,
-                       outline="#22c55e", width=2)
-        cv.create_oval(c - 3, c - 3, c + 3, c + 3,
-                       fill="#22c55e", outline="")
-        ov.after(24, lambda: animate(step + 1))
-
-    animate()
+    cv.create_oval(c - 8, c - 8, c + 8, c + 8,
+                   outline="#22c55e", width=2)
+    cv.create_oval(c - 2, c - 2, c + 2, c + 2,
+                   fill="#22c55e", outline="")
+    ov.after(90, ov.destroy)
 
 
 # ---------- GUI ---------------------------------------------------
