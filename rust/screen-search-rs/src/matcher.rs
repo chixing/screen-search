@@ -194,19 +194,33 @@ fn hint_code(mut index: usize, first_chars: &[char]) -> String {
     )
 }
 
+fn next_char_boundary(s: &str, index: usize) -> usize {
+    if index >= s.len() {
+        return s.len();
+    }
+    let mut next = index + 1;
+    while next < s.len() && !s.is_char_boundary(next) {
+        next += 1;
+    }
+    next
+}
+
 pub fn assign_hints(matches: Vec<Candidate>, base_query: &str) -> Vec<Candidate> {
     let mut next_chars = Vec::new();
     for m in &matches {
         let mut start = 0;
-        while let Some(idx) = m.n[start..].find(base_query) {
+        while let Some(haystack) = m.n.get(start..) {
+            let Some(idx) = haystack.find(base_query) else {
+                break;
+            };
             let abs = start + idx;
             let next = abs + base_query.len();
-            if let Some(ch) = m.n[next..].chars().next() {
+            if let Some(ch) = m.n.get(next..).and_then(|tail| tail.chars().next()) {
                 if !next_chars.contains(&ch) {
                     next_chars.push(ch);
                 }
             }
-            start = abs + 1;
+            start = next_char_boundary(&m.n, abs);
             if start >= m.n.len() {
                 break;
             }
@@ -248,7 +262,7 @@ pub fn resolve_selector_matches(
 
     if let Some(ctx) = hint_context {
         if query.starts_with(&ctx.base) {
-            let suffix = query[ctx.base.len()..].to_string();
+            let suffix = query.get(ctx.base.len()..).unwrap_or("").to_string();
             let matches = ctx
                 .matches
                 .iter()
@@ -304,11 +318,21 @@ mod tests {
     }
 
     #[test]
+    fn hint_assignment_handles_non_ascii_boundaries() {
+        let words = vec![word("éé", 10.0, 0), word("éa", 50.0, 1)];
+        let candidates = build_text_candidates(&words);
+        let (matches, _, suffix) = resolve_selector_matches(&norm("é"), &candidates, None, false);
+        assert_eq!(suffix, "");
+        assert_eq!(matches.len(), 2);
+        assert!(matches.iter().all(|m| !m.hint.is_empty()));
+    }
+
+    #[test]
     fn contains_search_suppresses_larger_overlapping_phrases() {
         let words = vec![
             word("Main", 10.0, 0),
             word("app", 48.0, 1),
-            word("screen_click_gui.py", 80.0, 2),
+            word("screen-search-rs.exe", 80.0, 2),
         ];
         let candidates = build_text_candidates(&words);
         let (matches, _, _) = resolve_selector_matches(&norm("app"), &candidates, None, false);

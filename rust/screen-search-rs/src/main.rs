@@ -4,11 +4,16 @@
 
 mod matcher;
 
+use std::backtrace::Backtrace;
 use std::ffi::c_void;
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::mem::{size_of, zeroed};
+use std::panic::{self, AssertUnwindSafe};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicIsize, Ordering};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use matcher::{
     Candidate, HintContext, Word, build_text_candidates, norm, resolve_selector_matches,
@@ -24,11 +29,12 @@ use windows::Win32::Foundation::{
 };
 use windows::Win32::Graphics::Gdi::{
     AC_SRC_ALPHA, AC_SRC_OVER, BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BLENDFUNCTION, BeginPaint,
-    BitBlt, CLIP_DEFAULT_PRECIS, CreateCompatibleBitmap, CreateCompatibleDC, CreateDIBSection,
-    CreateFontW, DEFAULT_CHARSET, DEFAULT_QUALITY, DIB_RGB_COLORS, DeleteDC, DeleteObject,
-    EndPaint, EnumDisplayMonitors, FW_BOLD, GetDC, GetDIBits, GetMonitorInfoW, HBITMAP, HDC, HFONT,
-    HMONITOR, MONITORINFO, OUT_DEFAULT_PRECIS, ReleaseDC, SRCCOPY, SelectObject, SetBkMode,
-    SetTextColor, TRANSPARENT, TextOutW,
+    BitBlt, CLIP_DEFAULT_PRECIS, CreateBitmap, CreateCompatibleBitmap, CreateCompatibleDC,
+    CreateDIBSection, CreateFontW, CreateSolidBrush, DEFAULT_CHARSET, DEFAULT_QUALITY,
+    DIB_RGB_COLORS, DeleteDC, DeleteObject, EndPaint, EnumDisplayMonitors, FW_BOLD, FillRect,
+    GetDC, GetDIBits, GetMonitorInfoW, HBITMAP, HBRUSH, HDC, HFONT, HMONITOR, MONITORINFO,
+    OUT_DEFAULT_PRECIS, ReleaseDC, SRCCOPY, SelectObject, SetBkColor, SetBkMode, SetTextColor,
+    TRANSPARENT, TextOutW,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::{
@@ -40,30 +46,51 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     INPUT, INPUT_0, INPUT_MOUSE, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEINPUT, SendInput,
     SetFocus, VIRTUAL_KEY, VK_ESCAPE, VK_F5, VK_RETURN, VK_TAB,
 };
+use windows::Win32::UI::Shell::{
+    NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW, Shell_NotifyIconW,
+};
 use windows::Win32::UI::WindowsAndMessaging::{
-    BringWindowToTop, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW,
-    DestroyWindow, DispatchMessageW, EN_CHANGE, FindWindowW, GA_ROOT, GetAncestor,
-    GetForegroundWindow, GetMessageW, GetSystemMetrics, GetWindowRect, GetWindowTextLengthW,
-    GetWindowTextW, GetWindowThreadProcessId, HMENU, IDC_ARROW, IsWindow, LoadCursorW, MSG,
-    MoveWindow, PostMessageW, PostQuitMessage, RegisterClassW, SM_CXVIRTUALSCREEN,
-    SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SW_HIDE, SW_SHOW, SWP_NOZORDER,
-    SetCursorPos, SetForegroundWindow, SetTimer, SetWindowPos, ShowWindow, TranslateMessage,
+    AppendMenuW, BringWindowToTop, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreateIconIndirect,
+    CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DestroyWindow, DispatchMessageW,
+    EN_CHANGE, FindWindowW, GA_ROOT, GetAncestor, GetClientRect, GetCursorPos, GetForegroundWindow,
+    GetMessageW, GetSystemMetrics, GetWindowRect, GetWindowTextLengthW, GetWindowTextW,
+    GetWindowThreadProcessId, HICON, HMENU, ICONINFO, IDC_ARROW, IsWindow, LoadCursorW, MF_CHECKED,
+    MF_SEPARATOR, MF_STRING, MF_UNCHECKED, MSG, MoveWindow, PostMessageW, PostQuitMessage,
+    RegisterClassW, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
+    SW_HIDE, SW_SHOW, SWP_NOZORDER, SendMessageW, SetCursorPos, SetForegroundWindow, SetTimer,
+    SetWindowPos, ShowWindow, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage,
     ULW_ALPHA, UpdateLayeredWindow, WINDOW_EX_STYLE, WINDOW_STYLE, WM_ACTIVATE, WM_APP, WM_COMMAND,
-    WM_CREATE, WM_DESTROY, WM_KEYDOWN, WM_PAINT, WM_TIMER, WNDCLASSW, WS_BORDER, WS_CHILD,
-    WS_CLIPSIBLINGS, WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
-    WS_VISIBLE, WindowFromPoint,
+    WM_CONTEXTMENU, WM_CREATE, WM_CTLCOLOREDIT, WM_CTLCOLORSTATIC, WM_DESTROY, WM_KEYDOWN,
+    WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_PAINT, WM_RBUTTONUP, WM_SETFONT, WM_TIMER, WNDCLASSW,
+    WS_BORDER, WS_CHILD, WS_CLIPSIBLINGS, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+    WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP, WS_VISIBLE, WindowFromPoint,
 };
 use windows::core::{Error, PCWSTR, Result, w};
 
-const EVENT_NAME: &str = "ScreenSearchToggleEvent";
-const EVENT_ALL_NAME: &str = "ScreenSearchToggleAllEvent";
-const EVENT_QUIT_NAME: &str = "ScreenSearchQuitEvent";
-const MUTEX_NAME: &str = "ScreenSearchSingletonMutex";
+const EVENT_NAME: &str = "ScreenSearchRustToggleEvent";
+const EVENT_ALL_NAME: &str = "ScreenSearchRustToggleAllEvent";
+const EVENT_QUIT_NAME: &str = "ScreenSearchRustQuitEvent";
+const MUTEX_NAME: &str = "ScreenSearchRustSingletonMutex";
 
 const INACTIVE_MONITOR_SCALE: f32 = 1.25;
 const HIGH_QUALITY_EXTRA_SCALES: &[f32] = &[2.0, 3.0];
-const OVERLAY_ENABLED: bool = false;
+const DEFAULT_OVERLAY_ENABLED: bool = false;
 const OVERLAY_TEST_SIZE: (i32, i32) = (360, 180);
+
+const THEME_BG: (u8, u8, u8) = (17, 24, 39);
+const THEME_PANEL: (u8, u8, u8) = (55, 65, 81);
+const THEME_TEXT: (u8, u8, u8) = (249, 250, 251);
+const THEME_PRIMARY: (u8, u8, u8) = (34, 197, 94);
+const THEME_ACCENT: (u8, u8, u8) = (251, 146, 60);
+const THEME_STATUS: (u8, u8, u8) = (253, 186, 116);
+const THEME_SELECTED: (u8, u8, u8) = (34, 197, 94);
+const THEME_INK: (u8, u8, u8) = (15, 23, 42);
+const POPUP_W: i32 = 360;
+const POPUP_H: i32 = 72;
+const POPUP_PAD: i32 = 10;
+const EDIT_H: i32 = 26;
+const STATUS_Y: i32 = 42;
+const STATUS_H: i32 = 18;
 
 const WM_TOGGLE: u32 = WM_APP + 1;
 const WM_TOGGLE_ALL: u32 = WM_APP + 2;
@@ -71,9 +98,82 @@ const WM_SNAPSHOT: u32 = WM_APP + 3;
 const WM_CAPTURE_DONE: u32 = WM_APP + 4;
 const WM_CAPTURE_FAILED: u32 = WM_APP + 5;
 const WM_QUIT_APP: u32 = WM_APP + 6;
+const WM_TRAY: u32 = WM_APP + 7;
 const TIMER_FILTER: usize = 1;
+const TIMER_REFOCUS: usize = 2;
+const TRAY_UID: u32 = 1;
+const MENU_OPEN: u32 = 100;
+const MENU_SCAN_ALL: u32 = 101;
+const MENU_UPSCALE: u32 = 102;
+const MENU_OVERLAY: u32 = 103;
+const MENU_QUIT: u32 = 199;
+const CRASH_LOG_PATH: &str = r"C:\tmp\screen-search-rs-crash.log";
+const TRACE_LOG_PATH: &str = r"C:\tmp\screen-search-rs-trace.log";
 
 static APP: OnceCell<Arc<Mutex<App>>> = OnceCell::new();
+static BG_BRUSH: AtomicIsize = AtomicIsize::new(0);
+static EDIT_BRUSH: AtomicIsize = AtomicIsize::new(0);
+
+fn append_crash_log(context: &str, details: &str) {
+    if let Ok(mut file) = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(CRASH_LOG_PATH)
+    {
+        let _ = writeln!(file, "\n=== {context} ===");
+        let _ = writeln!(file, "{details}");
+    }
+}
+
+fn trace_log(message: impl AsRef<str>) {
+    if let Ok(mut file) = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(TRACE_LOG_PATH)
+    {
+        let millis = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or_default();
+        let _ = writeln!(
+            file,
+            "{} pid={} {:?} {}",
+            millis,
+            std::process::id(),
+            thread::current().id(),
+            message.as_ref()
+        );
+    }
+}
+
+fn install_panic_log() {
+    panic::set_hook(Box::new(|info| {
+        append_crash_log(
+            "panic",
+            &format!("{info}\nBacktrace:\n{}", Backtrace::force_capture()),
+        );
+    }));
+}
+
+unsafe fn guarded_wndproc<F>(context: &str, fallback: F) -> LRESULT
+where
+    F: FnOnce() -> LRESULT,
+{
+    match panic::catch_unwind(AssertUnwindSafe(fallback)) {
+        Ok(result) => result,
+        Err(payload) => {
+            let message = if let Some(s) = payload.downcast_ref::<&str>() {
+                (*s).to_string()
+            } else if let Some(s) = payload.downcast_ref::<String>() {
+                s.clone()
+            } else {
+                "non-string panic payload".to_string()
+            };
+            append_crash_log(context, &message);
+            LRESULT(0)
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct Region {
@@ -125,7 +225,13 @@ struct App {
     exact: bool,
     upscale: bool,
     debug_all: bool,
+    overlay_enabled: bool,
     cold_show: bool,
+    listen_events: bool,
+    tray_added: bool,
+    bg_brush: HBRUSH,
+    edit_brush: HBRUSH,
+    popup_font: HFONT,
 }
 
 unsafe impl Send for App {}
@@ -134,8 +240,78 @@ fn rgb(r: u8, g: u8, b: u8) -> COLORREF {
     COLORREF((r as u32) | ((g as u32) << 8) | ((b as u32) << 16))
 }
 
+fn rgb_tuple(color: (u8, u8, u8)) -> COLORREF {
+    rgb(color.0, color.1, color.2)
+}
+
+fn store_theme_brushes(bg: HBRUSH, edit: HBRUSH) {
+    BG_BRUSH.store(bg.0 as isize, Ordering::Relaxed);
+    EDIT_BRUSH.store(edit.0 as isize, Ordering::Relaxed);
+}
+
+fn theme_bg_brush() -> HBRUSH {
+    HBRUSH(BG_BRUSH.load(Ordering::Relaxed) as *mut c_void)
+}
+
+fn theme_edit_brush() -> HBRUSH {
+    HBRUSH(EDIT_BRUSH.load(Ordering::Relaxed) as *mut c_void)
+}
+
+unsafe fn create_tray_icon() -> HICON {
+    let size = 16_i32;
+    let mut xor = vec![0u8; (size * size * 4) as usize];
+    for y in 0..size {
+        for x in 0..size {
+            let idx = ((y * size + x) * 4) as usize;
+            let in_circle = {
+                let dx = x - 7;
+                let dy = y - 7;
+                dx * dx + dy * dy <= 49
+            };
+            if in_circle {
+                xor[idx] = THEME_PRIMARY.2;
+                xor[idx + 1] = THEME_PRIMARY.1;
+                xor[idx + 2] = THEME_PRIMARY.0;
+                xor[idx + 3] = 255;
+            }
+            if (4..=11).contains(&x) && (6..=8).contains(&y) {
+                xor[idx] = THEME_ACCENT.2;
+                xor[idx + 1] = THEME_ACCENT.1;
+                xor[idx + 2] = THEME_ACCENT.0;
+                xor[idx + 3] = 255;
+            }
+            if (10..=12).contains(&x) && (9..=12).contains(&y) {
+                xor[idx] = THEME_INK.2;
+                xor[idx + 1] = THEME_INK.1;
+                xor[idx + 2] = THEME_INK.0;
+                xor[idx + 3] = 255;
+            }
+        }
+    }
+    let color = CreateBitmap(size, size, 1, 32, Some(xor.as_ptr() as *const c_void));
+    let and_mask = vec![0u8; 32];
+    let mask = CreateBitmap(size, size, 1, 1, Some(and_mask.as_ptr() as *const c_void));
+    CreateIconIndirect(&ICONINFO {
+        fIcon: BOOL(1),
+        xHotspot: 0,
+        yHotspot: 0,
+        hbmMask: mask,
+        hbmColor: color,
+    })
+    .unwrap_or_default()
+}
+
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+fn fill_wide<const N: usize>(dst: &mut [u16; N], text: &str) {
+    for (slot, ch) in dst
+        .iter_mut()
+        .zip(text.encode_utf16().chain(std::iter::once(0)))
+    {
+        *slot = ch;
+    }
 }
 
 fn set_text(hwnd: HWND, text: &str) {
@@ -210,8 +386,45 @@ unsafe extern "system" fn popup_proc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
+    guarded_wndproc("popup_proc", || popup_proc_inner(hwnd, msg, wparam, lparam))
+}
+
+unsafe fn popup_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     match msg {
         WM_CREATE => LRESULT(0),
+        WM_PAINT => {
+            let mut ps = zeroed();
+            let hdc = BeginPaint(hwnd, &mut ps);
+            let brush = theme_bg_brush();
+            if !brush.0.is_null() {
+                let mut rect = RECT::default();
+                if GetClientRect(hwnd, &mut rect).is_ok() {
+                    FillRect(hdc, &rect, brush);
+                }
+            }
+            EndPaint(hwnd, &ps);
+            LRESULT(0)
+        }
+        WM_CTLCOLOREDIT => {
+            let brush = theme_edit_brush();
+            if !brush.0.is_null() {
+                let hdc = HDC(wparam.0 as *mut c_void);
+                SetTextColor(hdc, rgb_tuple(THEME_TEXT));
+                SetBkColor(hdc, rgb_tuple(THEME_PANEL));
+                return LRESULT(brush.0 as isize);
+            }
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
+        WM_CTLCOLORSTATIC => {
+            let brush = theme_bg_brush();
+            if !brush.0.is_null() {
+                let hdc = HDC(wparam.0 as *mut c_void);
+                SetTextColor(hdc, rgb_tuple(THEME_STATUS));
+                SetBkColor(hdc, rgb_tuple(THEME_BG));
+                return LRESULT(brush.0 as isize);
+            }
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
         WM_COMMAND => {
             let code = ((wparam.0 >> 16) & 0xffff) as u16;
             if code == EN_CHANGE as u16 {
@@ -224,6 +437,11 @@ unsafe extern "system" fn popup_proc(
                 windows::Win32::UI::WindowsAndMessaging::KillTimer(hwnd, TIMER_FILTER);
                 if let Some(app) = APP.get() {
                     app.lock().do_type();
+                }
+            } else if wparam.0 == TIMER_REFOCUS {
+                windows::Win32::UI::WindowsAndMessaging::KillTimer(hwnd, TIMER_REFOCUS);
+                if let Some(app) = APP.get() {
+                    app.lock().refocus_popup();
                 }
             }
             LRESULT(0)
@@ -264,14 +482,7 @@ unsafe extern "system" fn popup_proc(
             DefWindowProcW(hwnd, msg, wparam, lparam)
         }
         WM_ACTIVATE => {
-            if wparam.0 == 0 {
-                if let Some(app) = APP.get() {
-                    let mut app = app.lock();
-                    if app.popup_visible {
-                        app.hide_popup();
-                    }
-                }
-            }
+            let _ = wparam;
             LRESULT(0)
         }
         WM_TOGGLE => {
@@ -313,7 +524,30 @@ unsafe extern "system" fn popup_proc(
             DestroyWindow(hwnd);
             LRESULT(0)
         }
+        WM_TRAY => {
+            let event = lparam.0 as u32;
+            if event == WM_RBUTTONUP
+                || event == WM_LBUTTONUP
+                || event == WM_CONTEXTMENU
+                || event == WM_LBUTTONDBLCLK
+            {
+                if let Some(app) = APP.get() {
+                    let mut app = app.lock();
+                    if event == WM_LBUTTONDBLCLK {
+                        app.show_popup(false);
+                    } else {
+                        app.show_tray_menu();
+                    }
+                }
+            }
+            LRESULT(0)
+        }
         WM_DESTROY => {
+            if let Some(app) = APP.get() {
+                let mut app = app.lock();
+                app.remove_tray_icon();
+                app.destroy_theme_resources();
+            }
             PostQuitMessage(0);
             LRESULT(0)
         }
@@ -327,16 +561,18 @@ unsafe extern "system" fn overlay_proc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
+    guarded_wndproc("overlay_proc", || {
+        overlay_proc_inner(hwnd, msg, wparam, lparam)
+    })
+}
+
+unsafe fn overlay_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     match msg {
         WM_PAINT => {
-            if let Some(app) = APP.get() {
-                app.lock().paint_overlay(hwnd);
-            } else {
-                let mut ps = zeroed();
-                let hdc = BeginPaint(hwnd, &mut ps);
-                EndPaint(hwnd, &ps);
-                let _ = hdc;
-            }
+            let mut ps = zeroed();
+            let hdc = BeginPaint(hwnd, &mut ps);
+            EndPaint(hwnd, &ps);
+            let _ = hdc;
             LRESULT(0)
         }
         _ => DefWindowProcW(hwnd, msg, wparam, lparam),
@@ -344,14 +580,22 @@ unsafe extern "system" fn overlay_proc(
 }
 
 impl App {
-    fn new(hinstance: HINSTANCE, cold_show: bool) -> Self {
+    fn new(
+        hinstance: HINSTANCE,
+        cold_show: bool,
+        scan_all: bool,
+        overlay_enabled: bool,
+        listen_events: bool,
+    ) -> Self {
         Self {
             hinstance,
-            scan_all: true,
+            scan_all,
             exact: false,
             upscale: true,
             debug_all: false,
+            overlay_enabled,
             cold_show,
+            listen_events,
             ..Default::default()
         }
     }
@@ -362,11 +606,31 @@ impl App {
             let popup_class = w!("ScreenSearchRustPopup");
             let overlay_class = w!("ScreenSearchRustOverlay");
             let cursor = LoadCursorW(None, IDC_ARROW)?;
+            let bg_brush = CreateSolidBrush(rgb_tuple(THEME_BG));
+            let edit_brush = CreateSolidBrush(rgb_tuple(THEME_PANEL));
+            store_theme_brushes(bg_brush, edit_brush);
+            let popup_font = CreateFontW(
+                -14,
+                0,
+                0,
+                0,
+                500,
+                0,
+                0,
+                0,
+                DEFAULT_CHARSET.0 as u32,
+                OUT_DEFAULT_PRECIS.0 as u32,
+                CLIP_DEFAULT_PRECIS.0 as u32,
+                DEFAULT_QUALITY.0 as u32,
+                0,
+                w!("Segoe UI"),
+            );
             RegisterClassW(&WNDCLASSW {
                 hCursor: cursor,
                 hInstance: hinstance,
                 lpszClassName: popup_class,
                 style: CS_HREDRAW | CS_VREDRAW,
+                hbrBackground: bg_brush,
                 lpfnWndProc: Some(popup_proc),
                 ..Default::default()
             });
@@ -386,8 +650,8 @@ impl App {
                 WS_POPUP | WS_BORDER,
                 CW_USEDEFAULT,
                 CW_USEDEFAULT,
-                480,
-                74,
+                POPUP_W,
+                POPUP_H,
                 None,
                 None,
                 hinstance,
@@ -399,37 +663,47 @@ impl App {
                 w!("EDIT"),
                 w!(""),
                 WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | WINDOW_STYLE(0x0080), // ES_AUTOHSCROLL
-                13,
-                10,
-                454,
-                28,
+                POPUP_PAD,
+                POPUP_PAD,
+                POPUP_W - POPUP_PAD * 2,
+                EDIT_H,
                 hwnd,
                 HMENU(1001usize as *mut c_void),
                 hinstance,
                 None,
             )?;
+            SendMessageW(edit, WM_SETFONT, WPARAM(popup_font.0 as usize), LPARAM(1));
             let status = CreateWindowExW(
                 WINDOW_EX_STYLE(0),
                 w!("STATIC"),
                 w!("Type to search."),
                 WS_CHILD | WS_VISIBLE,
-                13,
-                44,
-                454,
-                18,
+                POPUP_PAD,
+                STATUS_Y,
+                POPUP_W - POPUP_PAD * 2,
+                STATUS_H,
                 hwnd,
                 HMENU(1002usize as *mut c_void),
                 hinstance,
                 None,
             )?;
+            SendMessageW(status, WM_SETFONT, WPARAM(popup_font.0 as usize), LPARAM(1));
 
             {
                 let mut a = app.lock();
                 a.hwnd = hwnd;
                 a.edit = edit;
                 a.status = status;
+                a.bg_brush = bg_brush;
+                a.edit_brush = edit_brush;
+                a.popup_font = popup_font;
+                if a.listen_events {
+                    a.add_tray_icon();
+                }
             }
-            create_resident_events(hwnd)?;
+            if app.lock().listen_events {
+                create_resident_events(hwnd)?;
+            }
             if app.lock().cold_show {
                 PostMessageW(hwnd, WM_TOGGLE, WPARAM(0), LPARAM(0))?;
             }
@@ -442,9 +716,9 @@ impl App {
             let mut msg = MSG::default();
             while GetMessageW(&mut msg, None, 0, 0).into() {
                 if let Some(app) = APP.get() {
-                    let edit = app.lock().edit;
-                    if msg.hwnd == edit && msg.message == WM_KEYDOWN {
-                        if app.lock().handle_key(VIRTUAL_KEY(msg.wParam.0 as u16)) {
+                    let mut app = app.lock();
+                    if msg.hwnd == app.edit && msg.message == WM_KEYDOWN {
+                        if app.handle_key(VIRTUAL_KEY(msg.wParam.0 as u16)) {
                             continue;
                         }
                     }
@@ -486,6 +760,160 @@ impl App {
         }
     }
 
+    fn tray_data(&self) -> NOTIFYICONDATAW {
+        let mut data = NOTIFYICONDATAW {
+            cbSize: size_of::<NOTIFYICONDATAW>() as u32,
+            hWnd: self.hwnd,
+            uID: TRAY_UID,
+            ..Default::default()
+        };
+        fill_wide(&mut data.szTip, "Screen Search");
+        data
+    }
+
+    fn add_tray_icon(&mut self) {
+        if self.tray_added || self.hwnd.0.is_null() {
+            return;
+        }
+        unsafe {
+            let mut data = self.tray_data();
+            data.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
+            data.uCallbackMessage = WM_TRAY;
+            data.hIcon = create_tray_icon();
+            if Shell_NotifyIconW(NIM_ADD, &data).as_bool() {
+                self.tray_added = true;
+            }
+        }
+    }
+
+    fn remove_tray_icon(&mut self) {
+        if !self.tray_added {
+            return;
+        }
+        unsafe {
+            let data = self.tray_data();
+            let _ = Shell_NotifyIconW(NIM_DELETE, &data);
+        }
+        self.tray_added = false;
+    }
+
+    fn destroy_theme_resources(&mut self) {
+        unsafe {
+            if !self.bg_brush.0.is_null() {
+                DeleteObject(self.bg_brush);
+                self.bg_brush = HBRUSH(std::ptr::null_mut());
+            }
+            if !self.edit_brush.0.is_null() {
+                DeleteObject(self.edit_brush);
+                self.edit_brush = HBRUSH(std::ptr::null_mut());
+            }
+            store_theme_brushes(self.bg_brush, self.edit_brush);
+            if !self.popup_font.0.is_null() {
+                DeleteObject(self.popup_font);
+                self.popup_font = HFONT(std::ptr::null_mut());
+            }
+        }
+    }
+
+    fn menu_flags(checked: bool) -> windows::Win32::UI::WindowsAndMessaging::MENU_ITEM_FLAGS {
+        if checked {
+            MF_STRING | MF_CHECKED
+        } else {
+            MF_STRING | MF_UNCHECKED
+        }
+    }
+
+    unsafe fn append_menu_item(
+        menu: HMENU,
+        id: u32,
+        label: &str,
+        flags: windows::Win32::UI::WindowsAndMessaging::MENU_ITEM_FLAGS,
+    ) {
+        let text = wide(label);
+        let _ = AppendMenuW(menu, flags, id as usize, PCWSTR(text.as_ptr()));
+    }
+
+    fn show_tray_menu(&mut self) {
+        unsafe {
+            let Ok(menu) = CreatePopupMenu() else {
+                return;
+            };
+            Self::append_menu_item(menu, MENU_OPEN, "Open Search", MF_STRING);
+            let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+            Self::append_menu_item(
+                menu,
+                MENU_SCAN_ALL,
+                "Scan all monitors",
+                Self::menu_flags(self.scan_all),
+            );
+            Self::append_menu_item(
+                menu,
+                MENU_UPSCALE,
+                "Upscale OCR",
+                Self::menu_flags(self.upscale),
+            );
+            Self::append_menu_item(
+                menu,
+                MENU_OVERLAY,
+                "Show overlay",
+                Self::menu_flags(self.overlay_enabled),
+            );
+            let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+            Self::append_menu_item(menu, MENU_QUIT, "Quit", MF_STRING);
+
+            let mut pt = POINT::default();
+            if GetCursorPos(&mut pt).is_err() {
+                DestroyMenu(menu);
+                return;
+            }
+            let _ = SetForegroundWindow(self.hwnd);
+            let command = TrackPopupMenu(
+                menu,
+                TPM_RIGHTBUTTON | TPM_RETURNCMD,
+                pt.x,
+                pt.y,
+                0,
+                self.hwnd,
+                None,
+            )
+            .0 as u32;
+            DestroyMenu(menu);
+
+            match command {
+                MENU_OPEN => self.show_popup(false),
+                MENU_SCAN_ALL => {
+                    self.scan_all = !self.scan_all;
+                    self.recapture_if_open();
+                }
+                MENU_UPSCALE => {
+                    self.upscale = !self.upscale;
+                    self.recapture_if_open();
+                }
+                MENU_OVERLAY => {
+                    self.overlay_enabled = !self.overlay_enabled;
+                    if self.overlay_enabled {
+                        if self.popup_visible && self.snap.is_some() {
+                            self.live_filter();
+                        }
+                    } else {
+                        self.close_overlay();
+                    }
+                }
+                MENU_QUIT => {
+                    self.hide_popup();
+                    DestroyWindow(self.hwnd);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn recapture_if_open(&mut self) {
+        if self.popup_visible {
+            self.recapture();
+        }
+    }
+
     fn toggle_popup(&mut self, force_all: bool) {
         if self.popup_visible {
             self.hide_popup();
@@ -506,9 +934,22 @@ impl App {
             BringWindowToTop(self.hwnd);
             self.force_foreground(self.hwnd);
             SetFocus(self.edit);
+            let _ = SetTimer(self.hwnd, TIMER_REFOCUS, 125, None);
         }
         self.popup_visible = true;
         self.start_capture(true, force_all);
+    }
+
+    fn refocus_popup(&mut self) {
+        if !self.popup_visible {
+            return;
+        }
+        unsafe {
+            BringWindowToTop(self.hwnd);
+            self.force_foreground(self.hwnd);
+            SetFocus(self.edit);
+        }
+        trace_log("refocus_popup: edit focused");
     }
 
     fn hide_popup(&mut self) {
@@ -527,8 +968,8 @@ impl App {
         let mon = cursor_monitor().unwrap_or(Monitor {
             region: virtual_region(),
         });
-        let w = 480;
-        let h = 74;
+        let w = POPUP_W;
+        let h = POPUP_H;
         let x = mon.region.left + (mon.region.width - w) / 2;
         let y = mon.region.top + mon.region.height - h - 72;
         unsafe {
@@ -557,28 +998,37 @@ impl App {
     }
 
     fn do_type(&mut self) {
+        trace_log("do_type: enter");
         if !self.popup_visible {
+            trace_log("do_type: popup not visible");
             return;
         }
         let text = get_text(self.edit).trim().to_string();
+        trace_log(format!("do_type: text_len={} text={:?}", text.len(), text));
         if text == self.last_query {
+            trace_log("do_type: unchanged");
             return;
         }
         self.last_query = text.clone();
         if text.is_empty() {
             self.close_overlay();
             set_text(self.status, "Type to search.");
+            trace_log("do_type: empty");
             return;
         }
         if self.snap.is_none() {
             if !self.capturing {
+                trace_log("do_type: starting capture");
                 self.start_capture(false, false);
             } else {
                 set_text(self.status, "Reading screen...");
+                trace_log("do_type: capture already running");
             }
             return;
         }
+        trace_log("do_type: live_filter");
         self.live_filter();
+        trace_log("do_type: exit");
     }
 
     fn start_capture(&mut self, force: bool, force_all: bool) {
@@ -610,7 +1060,16 @@ impl App {
     }
 
     fn accept_snapshot(&mut self, seq: u64, snap: Snapshot) {
+        trace_log(format!(
+            "accept_snapshot: seq={} words={} candidates={} complete={} quality={}",
+            seq,
+            snap.words.len(),
+            snap.candidates.len(),
+            snap.complete,
+            snap.quality
+        ));
         if seq != self.capture_seq {
+            trace_log("accept_snapshot: stale");
             return;
         }
         self.snap = Some(snap.clone());
@@ -620,7 +1079,9 @@ impl App {
             return;
         }
         if !get_text(self.edit).trim().is_empty() {
+            trace_log("accept_snapshot: live_filter");
             self.live_filter();
+            trace_log("accept_snapshot: live_filter done");
             return;
         }
         if snap.quality == "high" {
@@ -652,18 +1113,32 @@ impl App {
     }
 
     fn live_filter(&mut self) {
+        trace_log("live_filter: enter");
         let Some(snap) = &self.snap else {
+            trace_log("live_filter: no snap");
             return;
         };
         let text = get_text(self.edit).trim().to_string();
         let q = norm(&text);
+        trace_log(format!(
+            "live_filter: q={:?} words={} candidates={}",
+            q,
+            snap.words.len(),
+            snap.candidates.len()
+        ));
         if q.is_empty() {
             self.close_overlay();
             self.hint_context = None;
+            trace_log("live_filter: empty q");
             return;
         }
         let (mut matches, ctx, hint_suffix) =
             resolve_selector_matches(&q, &snap.candidates, self.hint_context.as_ref(), self.exact);
+        trace_log(format!(
+            "live_filter: resolved matches={} suffix={:?}",
+            matches.len(),
+            hint_suffix
+        ));
         self.hint_context = ctx;
 
         let popup_rect = window_rect(self.hwnd);
@@ -695,9 +1170,12 @@ impl App {
                     self.all_words.len()
                 ),
             );
+            trace_log("live_filter: no matches");
             return;
         }
+        trace_log("live_filter: refresh_overlay");
         self.refresh_overlay();
+        trace_log("live_filter: refresh_overlay done");
         if self.matches.is_empty() {
             set_text(
                 self.status,
@@ -720,6 +1198,7 @@ impl App {
                 ),
             );
         }
+        trace_log("live_filter: exit");
     }
 
     fn select_next(&mut self) {
@@ -764,7 +1243,7 @@ impl App {
     }
 
     fn ensure_overlay(&mut self) {
-        if !OVERLAY_ENABLED {
+        if !self.overlay_enabled {
             self.close_overlay();
             return;
         }
@@ -781,10 +1260,14 @@ impl App {
                 return;
             }
             let Ok(hwnd) = CreateWindowExW(
-                WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_TRANSPARENT,
+                WS_EX_TOPMOST
+                    | WS_EX_TOOLWINDOW
+                    | WS_EX_LAYERED
+                    | WS_EX_TRANSPARENT
+                    | WS_EX_NOACTIVATE,
                 w!("ScreenSearchRustOverlay"),
                 w!("Screen Search Overlay"),
-                WS_POPUP,
+                WS_POPUP | WS_VISIBLE,
                 self.region.left,
                 self.region.top,
                 self.region.width,
@@ -801,19 +1284,30 @@ impl App {
     }
 
     fn refresh_overlay(&mut self) {
-        if !OVERLAY_ENABLED {
+        trace_log(format!(
+            "refresh_overlay: enter enabled={} region={}x{} matches={}",
+            self.overlay_enabled,
+            self.region.width,
+            self.region.height,
+            self.matches.len()
+        ));
+        if !self.overlay_enabled {
             self.close_overlay();
+            trace_log("refresh_overlay: disabled");
             return;
         }
         if self.region.width <= 0 || self.region.height <= 0 {
             self.close_overlay();
+            trace_log("refresh_overlay: invalid region");
             return;
         }
         self.ensure_overlay();
         if self.overlay.0.is_null() {
+            trace_log("refresh_overlay: no overlay hwnd");
             return;
         }
 
+        trace_log("refresh_overlay: allocating pixels");
         let mut pixels = vec![0u8; (self.region.width * self.region.height * 4) as usize];
         if self.debug_all {
             for w in &self.all_words {
@@ -826,7 +1320,7 @@ impl App {
                     (w.x + w.w).round() as i32,
                     (w.y + w.h).round() as i32,
                     1,
-                    (58, 123, 213, 150),
+                    (THEME_PRIMARY.0, THEME_PRIMARY.1, THEME_PRIMARY.2, 150),
                 );
             }
         }
@@ -834,9 +1328,9 @@ impl App {
         for (i, m) in self.matches.iter().enumerate() {
             let selected = i == self.selected;
             let color = if selected {
-                (34, 197, 94, 255)
+                (THEME_SELECTED.0, THEME_SELECTED.1, THEME_SELECTED.2, 255)
             } else {
-                (251, 146, 60, 245)
+                (THEME_ACCENT.0, THEME_ACCENT.1, THEME_ACCENT.2, 245)
             };
             draw_rect_outline(
                 &mut pixels,
@@ -847,7 +1341,7 @@ impl App {
                 (m.x + m.w).round() as i32 + 4,
                 (m.y + m.h).round() as i32 + 4,
                 if selected { 5 } else { 3 },
-                (17, 24, 39, 240),
+                (THEME_INK.0, THEME_INK.1, THEME_INK.2, 230),
             );
             draw_rect_outline(
                 &mut pixels,
@@ -879,15 +1373,19 @@ impl App {
             }
         }
 
+        trace_log("refresh_overlay: update_layered_overlay");
         if unsafe { update_layered_overlay(self.overlay, self.region, &pixels, &self.matches) }
             .is_ok()
         {
-            unsafe {
-                ShowWindow(self.overlay, SW_SHOW);
+            trace_log("refresh_overlay: update done");
+            if self.popup_visible {
+                self.refocus_popup();
             }
         } else {
+            trace_log("refresh_overlay: update failed");
             self.close_overlay();
         }
+        trace_log("refresh_overlay: exit");
     }
 
     fn close_overlay(&mut self) {
@@ -897,10 +1395,6 @@ impl App {
             }
         }
         self.overlay = HWND(std::ptr::null_mut());
-    }
-
-    fn paint_overlay(&self, hwnd: HWND) {
-        let _ = hwnd;
     }
 }
 
@@ -966,13 +1460,22 @@ unsafe fn update_layered_overlay(
     pixels: &[u8],
     matches: &[Candidate],
 ) -> Result<()> {
+    trace_log(format!(
+        "update_layered_overlay: enter region={}x{} pixels={} matches={}",
+        region.width,
+        region.height,
+        pixels.len(),
+        matches.len()
+    ));
     let screen = GetDC(None);
     if screen.0.is_null() {
+        trace_log("update_layered_overlay: GetDC failed");
         return Err(Error::from_win32());
     }
     let mem = CreateCompatibleDC(screen);
     if mem.0.is_null() {
         ReleaseDC(None, screen);
+        trace_log("update_layered_overlay: CreateCompatibleDC failed");
         return Err(Error::from_win32());
     }
 
@@ -993,11 +1496,14 @@ unsafe fn update_layered_overlay(
     if bits.is_null() {
         DeleteDC(mem);
         ReleaseDC(None, screen);
+        trace_log("update_layered_overlay: CreateDIBSection null bits");
         return Err(Error::from_win32());
     }
+    trace_log("update_layered_overlay: copy pixels");
     std::ptr::copy_nonoverlapping(pixels.as_ptr(), bits as *mut u8, pixels.len());
 
     let old = SelectObject(mem, HBITMAP(bitmap.0));
+    trace_log("update_layered_overlay: draw hint text");
     draw_hint_text(mem, matches);
 
     let dst = POINT {
@@ -1016,6 +1522,7 @@ unsafe fn update_layered_overlay(
         AlphaFormat: AC_SRC_ALPHA as u8,
     };
 
+    trace_log("update_layered_overlay: UpdateLayeredWindow call");
     let result = UpdateLayeredWindow(
         hwnd,
         screen,
@@ -1027,6 +1534,10 @@ unsafe fn update_layered_overlay(
         Some(&blend),
         ULW_ALPHA,
     );
+    trace_log(format!(
+        "update_layered_overlay: UpdateLayeredWindow returned ok={}",
+        result.is_ok()
+    ));
 
     SelectObject(mem, old);
     DeleteObject(bitmap);
@@ -1600,6 +2111,7 @@ unsafe fn send_mouse(flags: windows::Win32::UI::Input::KeyboardAndMouse::MOUSE_E
 }
 
 fn run() -> Result<()> {
+    install_panic_log();
     unsafe {
         let _ = RoInitialize(RO_INIT_MULTITHREADED);
     }
@@ -1608,6 +2120,9 @@ fn run() -> Result<()> {
     if overlay_test {
         return run_overlay_test();
     }
+    let overlay_enabled = args.iter().any(|a| a == "--enable-overlay") || DEFAULT_OVERLAY_ENABLED;
+    let scan_all = !args.iter().any(|a| a == "--active-monitor");
+    let test_instance = args.iter().any(|a| a == "--test-instance");
     let toggle = args.iter().any(|a| a == "--toggle");
     let toggle_all = args.iter().any(|a| a == "--toggle-all");
     let quit = args.iter().any(|a| a == "--quit");
@@ -1622,24 +2137,32 @@ fn run() -> Result<()> {
     } else {
         EVENT_NAME
     };
-    if (toggle || toggle_all) && signal_event(event) {
+    if !test_instance && (toggle || toggle_all) && signal_event(event) {
         return Ok(());
     }
 
-    let mutex_name = wide(MUTEX_NAME);
-    unsafe {
-        let mutex = CreateMutexW(None, false, PCWSTR(mutex_name.as_ptr()))?;
-        if GetLastError() == ERROR_ALREADY_EXISTS {
-            if toggle || toggle_all {
-                let _ = signal_event(event);
+    if !test_instance {
+        let mutex_name = wide(MUTEX_NAME);
+        unsafe {
+            let mutex = CreateMutexW(None, false, PCWSTR(mutex_name.as_ptr()))?;
+            if GetLastError() == ERROR_ALREADY_EXISTS {
+                if toggle || toggle_all {
+                    let _ = signal_event(event);
+                }
+                let _ = CloseHandle(mutex);
+                return Ok(());
             }
-            let _ = CloseHandle(mutex);
-            return Ok(());
         }
     }
 
     let hinstance = unsafe { HINSTANCE(GetModuleHandleW(None)?.0) };
-    let app = Arc::new(Mutex::new(App::new(hinstance, toggle || toggle_all)));
+    let app = Arc::new(Mutex::new(App::new(
+        hinstance,
+        toggle || toggle_all,
+        scan_all,
+        overlay_enabled,
+        !test_instance,
+    )));
     let _ = APP.set(app.clone());
     App::create_windows(app)?;
     App::message_loop();
