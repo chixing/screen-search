@@ -9,9 +9,10 @@ The active implementation is the Rust app in [`rust/screen-search-rs`](rust/scre
 ```text
 Rust resident process
 ├─ single instance guard          → named mutex
-├─ AutoHotkey Alt+F               → screen-search-rs.exe --toggle --enable-overlay
+├─ AutoHotkey Alt+F               → screen-search-rs.exe --toggle
 ├─ named Win32 events             → wake an existing resident
 ├─ system tray menu               → search/settings toggles/quit
+├─ persisted config               → %APPDATA%\ScreenSearch\config.ini
 ├─ search popup                   → live query input
 ├─ Windows Runtime OCR            → text detection
 ├─ GDI capture                    → all-monitor screenshots
@@ -47,16 +48,36 @@ The built executable is:
 rust\screen-search-rs\target\release\screen-search-rs.exe
 ```
 
+## Install
+
+Install the release executable to a stable user-local path:
+
+```powershell
+.\install.ps1
+```
+
+That copies the binary to:
+
+```text
+%LOCALAPPDATA%\ScreenSearch\screen-search-rs.exe
+```
+
+Use this installed path from AutoHotkey or other launchers. The repo `target\release` path is only a build artifact.
+
 ## Run
 
 | Command | Behavior |
 | --- | --- |
-| `screen-search-rs.exe --toggle --enable-overlay` | Start or signal the resident and open search. |
-| `screen-search-rs.exe --toggle-all --enable-overlay` | Compatibility path for forcing all-monitor search. |
-| `screen-search-rs.exe --active-monitor --toggle --enable-overlay` | Search only the monitor under the cursor. |
+| `screen-search-rs.exe --toggle` | Start or signal the resident and open search. |
+| `screen-search-rs.exe --toggle-all` | Compatibility path for forcing all-monitor search. |
+| `screen-search-rs.exe --active-monitor --toggle` | Search only the monitor under the cursor for that launch. |
 | `screen-search-rs.exe --quit` | Gracefully exit the resident. |
-| `screen-search-rs.exe --test-instance --toggle --enable-overlay` | Start an isolated manual test instance without the shared singleton/events. |
+| `screen-search-rs.exe --test-instance --toggle` | Start an isolated manual test instance without the shared singleton/events. |
 | `screen-search-rs.exe --overlay-test` | Run the bounded overlay smoke test. |
+| `screen-search-rs.exe --debug` | Enable trace logging for that resident process. |
+| `screen-search-rs.exe --bench-ocr` | Benchmark capture/OCR at 1×, 1.25×, 2×, and 3×. |
+| `screen-search-rs.exe --dump-ocr` | Dump recognized OCR words and boxes. |
+| `screen-search-rs.exe --bench-ocr --quiet` | Write diagnostics without showing a completion dialog. |
 
 Launching without `--toggle` starts the resident and leaves it available from the tray.
 
@@ -70,7 +91,13 @@ The tray icon provides:
 - Show overlay
 - Quit
 
-These settings are runtime toggles. Persistent settings are still pending.
+Scan all monitors, upscale OCR, and show overlay default to on.
+
+These settings persist to:
+
+```text
+%APPDATA%\ScreenSearch\config.ini
+```
 
 ## Komorebi / AutoHotkey integration
 
@@ -78,8 +105,8 @@ The active hotkey lives in `C:\Users\chix\workspace\dotfiles\windows\komorebi\ko
 
 ```ahk
 ScreenSearchRust(mode) {
-    exe := EnvGet("USERPROFILE") . "\workspace\screen-search\rust\screen-search-rs\target\release\screen-search-rs.exe"
-    command := Format('"{}" {} --enable-overlay', exe, mode)
+    exe := EnvGet("LOCALAPPDATA") . "\ScreenSearch\screen-search-rs.exe"
+    command := Format('"{}" {}', exe, mode)
     Run(command, , "Hide")
 }
 
@@ -97,6 +124,24 @@ Screen Search does not register its own global hotkey. AutoHotkey owns Alt+F and
 - A broad all-monitor search can show active-monitor results first, then merge wider and higher-quality OCR passes as they finish.
 - Windows OCR rejects images over 10,000 px in either dimension, so upscale is clamped.
 
+## Diagnostics
+
+Diagnostics are written under:
+
+```text
+%LOCALAPPDATA%\ScreenSearch
+```
+
+Useful commands:
+
+```powershell
+%LOCALAPPDATA%\ScreenSearch\screen-search-rs.exe --bench-ocr
+%LOCALAPPDATA%\ScreenSearch\screen-search-rs.exe --dump-ocr
+%LOCALAPPDATA%\ScreenSearch\screen-search-rs.exe --debug
+```
+
+`--bench-ocr` writes capture/OCR timings and word counts. `--dump-ocr` writes recognized words and bounding boxes. Add `--quiet` to suppress the completion dialog. `--debug` enables the trace log; trace logging is off by default.
+
 ## Development
 
 ```powershell
@@ -109,13 +154,11 @@ cargo build --release
 Restart the resident after building:
 
 ```powershell
-rust\screen-search-rs\target\release\screen-search-rs.exe --quit
-rust\screen-search-rs\target\release\screen-search-rs.exe --toggle --enable-overlay
+.\install.ps1
 ```
 
 ## Known constraints
 
 - Windows OCR accuracy is still the main quality limit.
 - Mixed-DPI monitor setups may need more coordinate validation.
-- Settings toggles are not persisted yet.
-- Optional packaging/install flow is still pending.
+- Packaging is currently a per-user install script, not an MSI/MSIX.

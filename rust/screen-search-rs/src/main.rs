@@ -5,15 +5,17 @@
 mod matcher;
 
 use std::backtrace::Backtrace;
+use std::env;
 use std::ffi::c_void;
-use std::fs::OpenOptions;
+use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::mem::{size_of, zeroed};
 use std::panic::{self, AssertUnwindSafe};
+use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicIsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use matcher::{
     Candidate, HintContext, Word, build_text_candidates, norm, resolve_selector_matches,
@@ -75,7 +77,7 @@ const MUTEX_NAME: &str = "ScreenSearchRustSingletonMutex";
 
 const INACTIVE_MONITOR_SCALE: f32 = 1.25;
 const HIGH_QUALITY_EXTRA_SCALES: &[f32] = &[2.0, 3.0];
-const DEFAULT_OVERLAY_ENABLED: bool = false;
+const DEFAULT_OVERLAY_ENABLED: bool = true;
 const OVERLAY_TEST_SIZE: (i32, i32) = (360, 180);
 
 const THEME_BG: (u8, u8, u8) = (17, 24, 39);
@@ -125,30 +127,122 @@ const MENU_SCAN_ALL: u32 = 101;
 const MENU_UPSCALE: u32 = 102;
 const MENU_OVERLAY: u32 = 103;
 const MENU_QUIT: u32 = 199;
-const CRASH_LOG_PATH: &str = r"C:\tmp\screen-search-rs-crash.log";
-const TRACE_LOG_PATH: &str = r"C:\tmp\screen-search-rs-trace.log";
+const APP_DIR_NAME: &str = "ScreenSearch";
+const CONFIG_FILE_NAME: &str = "config.ini";
+const CRASH_LOG_FILE_NAME: &str = "screen-search-rs-crash.log";
+const TRACE_LOG_FILE_NAME: &str = "screen-search-rs-trace.log";
+const DIAGNOSTICS_FILE_NAME: &str = "screen-search-rs-diagnostics.txt";
 
 static APP: OnceCell<Arc<Mutex<App>>> = OnceCell::new();
 static BG_BRUSH: AtomicIsize = AtomicIsize::new(0);
 static EDIT_BRUSH: AtomicIsize = AtomicIsize::new(0);
+static TRACE_ENABLED: AtomicBool = AtomicBool::new(false);
+
+#[derive(Clone, Copy, Debug)]
+struct Settings {
+    scan_all: bool,
+    upscale: bool,
+    overlay_enabled: bool,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            scan_all: true,
+            upscale: true,
+            overlay_enabled: DEFAULT_OVERLAY_ENABLED,
+        }
+    }
+}
+
+fn appdata_dir() -> PathBuf {
+    env::var_os("APPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(env::temp_dir)
+        .join(APP_DIR_NAME)
+}
+
+fn local_appdata_dir() -> PathBuf {
+    env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(env::temp_dir)
+        .join(APP_DIR_NAME)
+}
+
+fn config_path() -> PathBuf {
+    appdata_dir().join(CONFIG_FILE_NAME)
+}
+
+fn local_data_path(file_name: &str) -> PathBuf {
+    local_appdata_dir().join(file_name)
+}
+
+fn read_bool(value: &str) -> Option<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Some(true),
+        "0" | "false" | "no" | "off" => Some(false),
+        _ => None,
+    }
+}
+
+fn load_settings() -> Settings {
+    let mut settings = Settings::default();
+    let Ok(text) = fs::read_to_string(config_path()) else {
+        return settings;
+    };
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let Some(value) = read_bool(value) else {
+            continue;
+        };
+        match key.trim() {
+            "scan_all" => settings.scan_all = value,
+            "upscale" => settings.upscale = value,
+            "overlay_enabled" => settings.overlay_enabled = value,
+            _ => {}
+        }
+    }
+    settings
+}
+
+fn save_settings(settings: Settings) {
+    let path = config_path();
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let text = format!(
+        "scan_all={}\nupscale={}\noverlay_enabled={}\n",
+        settings.scan_all, settings.upscale, settings.overlay_enabled
+    );
+    let _ = fs::write(path, text);
+}
 
 fn append_crash_log(context: &str, details: &str) {
-    if let Ok(mut file) = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(CRASH_LOG_PATH)
-    {
+    let path = local_data_path(CRASH_LOG_FILE_NAME);
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
         let _ = writeln!(file, "\n=== {context} ===");
         let _ = writeln!(file, "{details}");
     }
 }
 
 fn trace_log(message: impl AsRef<str>) {
-    if let Ok(mut file) = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(TRACE_LOG_PATH)
-    {
+    if !TRACE_ENABLED.load(Ordering::Relaxed) {
+        return;
+    }
+    let path = local_data_path(TRACE_LOG_FILE_NAME);
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
         let millis = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_millis())
@@ -602,24 +696,30 @@ unsafe fn overlay_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARA
 }
 
 impl App {
-    fn new(
-        hinstance: HINSTANCE,
-        cold_show: bool,
-        scan_all: bool,
-        overlay_enabled: bool,
-        listen_events: bool,
-    ) -> Self {
+    fn new(hinstance: HINSTANCE, cold_show: bool, settings: Settings, listen_events: bool) -> Self {
         Self {
             hinstance,
-            scan_all,
+            scan_all: settings.scan_all,
             exact: false,
-            upscale: true,
+            upscale: settings.upscale,
             debug_all: false,
-            overlay_enabled,
+            overlay_enabled: settings.overlay_enabled,
             cold_show,
             listen_events,
             ..Default::default()
         }
+    }
+
+    fn current_settings(&self) -> Settings {
+        Settings {
+            scan_all: self.scan_all,
+            upscale: self.upscale,
+            overlay_enabled: self.overlay_enabled,
+        }
+    }
+
+    fn save_current_settings(&self) {
+        save_settings(self.current_settings());
     }
 
     fn create_windows(app: Arc<Mutex<App>>) -> Result<()> {
@@ -918,14 +1018,17 @@ impl App {
                 MENU_OPEN => self.show_popup(false),
                 MENU_SCAN_ALL => {
                     self.scan_all = !self.scan_all;
+                    self.save_current_settings();
                     self.recapture_if_open();
                 }
                 MENU_UPSCALE => {
                     self.upscale = !self.upscale;
+                    self.save_current_settings();
                     self.recapture_if_open();
                 }
                 MENU_OVERLAY => {
                     self.overlay_enabled = !self.overlay_enabled;
+                    self.save_current_settings();
                     if self.overlay_enabled {
                         if self.popup_visible && self.snap.is_some() {
                             self.live_filter();
@@ -2140,6 +2243,88 @@ fn capture_snapshots(
     Ok(())
 }
 
+fn run_ocr_diagnostics(args: &[String], bench: bool) -> Result<()> {
+    let started = Instant::now();
+    let active_only = args_has(args, "--active-monitor");
+    let monitors = if active_only {
+        cursor_monitor().into_iter().collect::<Vec<_>>()
+    } else {
+        ordered_monitors()
+    };
+    let scales = if bench {
+        vec![1.0, 1.25, 2.0, 3.0]
+    } else if args_has(args, "--no-upscale") {
+        vec![1.0]
+    } else {
+        vec![2.0]
+    };
+    let mut report = String::new();
+    report.push_str("Screen Search OCR diagnostics\n");
+    report.push_str(&format!("mode={}\n", if bench { "bench" } else { "dump" }));
+    report.push_str(&format!("active_only={active_only}\n"));
+    report.push_str(&format!("monitors={}\n", monitors.len()));
+    report.push_str(&format!("scales={scales:?}\n\n"));
+
+    for (idx, mon) in monitors.iter().enumerate() {
+        report.push_str(&format!(
+            "monitor #{idx}: left={} top={} width={} height={}\n",
+            mon.region.left, mon.region.top, mon.region.width, mon.region.height
+        ));
+        let capture_start = Instant::now();
+        match capture_region(mon.region) {
+            Ok(shot) => {
+                let capture_elapsed = capture_start.elapsed();
+                report.push_str(&format!("  capture_ms={}\n", capture_elapsed.as_millis()));
+                for requested_scale in &scales {
+                    let actual_scale = effective_scale(&shot, *requested_scale);
+                    let ocr_start = Instant::now();
+                    match ocr_words(&shot, *requested_scale) {
+                        Ok(words) => {
+                            let elapsed = ocr_start.elapsed();
+                            report.push_str(&format!(
+                                "  requested_scale={requested_scale:.2} actual_scale={actual_scale:.2} ocr_ms={} words={}\n",
+                                elapsed.as_millis(),
+                                words.len()
+                            ));
+                            if !bench {
+                                for word in words {
+                                    report.push_str(&format!(
+                                        "    [{:.0},{:.0},{:.0},{:.0}] {}\n",
+                                        word.x, word.y, word.w, word.h, word.text
+                                    ));
+                                }
+                            }
+                        }
+                        Err(err) => {
+                            report.push_str(&format!(
+                                "  requested_scale={requested_scale:.2} actual_scale={actual_scale:.2} error={err}\n"
+                            ));
+                        }
+                    }
+                }
+            }
+            Err(err) => {
+                report.push_str(&format!("  capture_error={err}\n"));
+            }
+        }
+        report.push('\n');
+    }
+    report.push_str(&format!("total_ms={}\n", started.elapsed().as_millis()));
+
+    let path = local_data_path(DIAGNOSTICS_FILE_NAME);
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    fs::write(&path, report).map_err(|_| Error::from_win32())?;
+    if !args_has(args, "--quiet") {
+        show_message(
+            "Screen Search Diagnostics",
+            &format!("Diagnostics written to:\n{}", path.display()),
+        );
+    }
+    Ok(())
+}
+
 fn post_snapshot(hwnd: HWND, seq: u64, snap: Snapshot) {
     unsafe {
         let boxed = Box::new(snap);
@@ -2231,18 +2416,59 @@ unsafe fn send_mouse(flags: windows::Win32::UI::Input::KeyboardAndMouse::MOUSE_E
     let _ = SendInput(&[input], size_of::<INPUT>() as i32);
 }
 
+fn args_has(args: &[String], flag: &str) -> bool {
+    args.iter().any(|arg| arg == flag)
+}
+
+fn show_message(title: &str, body: &str) {
+    let title = wide(title);
+    let body = wide(body);
+    unsafe {
+        windows::Win32::UI::WindowsAndMessaging::MessageBoxW(
+            None,
+            PCWSTR(body.as_ptr()),
+            PCWSTR(title.as_ptr()),
+            Default::default(),
+        );
+    }
+}
+
 fn run() -> Result<()> {
     install_panic_log();
     unsafe {
         let _ = RoInitialize(RO_INIT_MULTITHREADED);
     }
     let args = std::env::args().collect::<Vec<_>>();
+    TRACE_ENABLED.store(args_has(&args, "--debug"), Ordering::Relaxed);
     let overlay_test = args.iter().any(|a| a == "--overlay-test");
     if overlay_test {
         return run_overlay_test();
     }
-    let overlay_enabled = args.iter().any(|a| a == "--enable-overlay") || DEFAULT_OVERLAY_ENABLED;
-    let scan_all = !args.iter().any(|a| a == "--active-monitor");
+    if args_has(&args, "--bench-ocr") {
+        return run_ocr_diagnostics(&args, true);
+    }
+    if args_has(&args, "--dump-ocr") {
+        return run_ocr_diagnostics(&args, false);
+    }
+    let mut settings = load_settings();
+    if args_has(&args, "--enable-overlay") {
+        settings.overlay_enabled = true;
+    }
+    if args_has(&args, "--disable-overlay") {
+        settings.overlay_enabled = false;
+    }
+    if args_has(&args, "--active-monitor") {
+        settings.scan_all = false;
+    }
+    if args_has(&args, "--all-monitors") {
+        settings.scan_all = true;
+    }
+    if args_has(&args, "--upscale") {
+        settings.upscale = true;
+    }
+    if args_has(&args, "--no-upscale") {
+        settings.upscale = false;
+    }
     let test_instance = args.iter().any(|a| a == "--test-instance");
     let toggle = args.iter().any(|a| a == "--toggle");
     let toggle_all = args.iter().any(|a| a == "--toggle-all");
@@ -2280,8 +2506,7 @@ fn run() -> Result<()> {
     let app = Arc::new(Mutex::new(App::new(
         hinstance,
         toggle || toggle_all,
-        scan_all,
-        overlay_enabled,
+        settings,
         !test_instance,
     )));
     let _ = APP.set(app.clone());
@@ -2292,16 +2517,6 @@ fn run() -> Result<()> {
 
 fn main() {
     if let Err(err) = run() {
-        let msg = format!("{err:?}");
-        let title = wide("Screen Search Rust");
-        let body = wide(&msg);
-        unsafe {
-            windows::Win32::UI::WindowsAndMessaging::MessageBoxW(
-                None,
-                PCWSTR(body.as_ptr()),
-                PCWSTR(title.as_ptr()),
-                Default::default(),
-            );
-        }
+        show_message("Screen Search Rust", &format!("{err:?}"));
     }
 }
