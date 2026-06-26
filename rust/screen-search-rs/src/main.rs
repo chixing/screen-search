@@ -94,6 +94,8 @@ const POPUP_PAD: i32 = 10;
 const EDIT_H: i32 = 26;
 const STATUS_Y: i32 = 42;
 const STATUS_H: i32 = 18;
+const VK_A_CODE: u16 = 0x41;
+const EM_SETSEL: u32 = 0x00B1;
 
 #[derive(Clone, Copy)]
 enum ConfirmAction {
@@ -466,6 +468,10 @@ unsafe fn popup_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             let vk = VIRTUAL_KEY(wparam.0 as u16);
             if let Some(app) = APP.get() {
                 let mut app = app.lock();
+                if is_ctrl_a(vk) {
+                    app.select_all_query();
+                    return LRESULT(0);
+                }
                 match vk {
                     VK_RETURN => {
                         app.confirm(current_confirm_action());
@@ -746,6 +752,10 @@ impl App {
     }
 
     fn handle_key(&mut self, vk: VIRTUAL_KEY) -> bool {
+        if is_ctrl_a(vk) {
+            self.select_all_query();
+            return true;
+        }
         match vk {
             VK_RETURN => {
                 self.confirm(current_confirm_action());
@@ -773,6 +783,15 @@ impl App {
                 true
             },
             _ => false,
+        }
+    }
+
+    fn select_all_query(&self) {
+        unsafe {
+            if !self.edit.0.is_null() {
+                SetFocus(self.edit);
+                SendMessageW(self.edit, EM_SETSEL, WPARAM(0), LPARAM(-1));
+            }
         }
     }
 
@@ -2163,6 +2182,10 @@ fn current_confirm_action() -> ConfirmAction {
             ConfirmAction::Move
         }
     }
+}
+
+fn is_ctrl_a(vk: VIRTUAL_KEY) -> bool {
+    vk.0 == VK_A_CODE && unsafe { is_key_down(VK_CONTROL) }
 }
 
 unsafe fn is_key_down(vk: VIRTUAL_KEY) -> bool {
