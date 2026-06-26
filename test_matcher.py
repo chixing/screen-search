@@ -4,6 +4,7 @@ from screen_click_gui import (
     _norm,
     _offset_words,
     build_text_candidates,
+    merge_ocr_words,
     resolve_selector_matches,
 )
 
@@ -79,6 +80,21 @@ class MatcherTests(unittest.TestCase):
         self.assertEqual(moved[0]["y"], 21)
         self.assertEqual(moved[0]["line"], 12)
         self.assertEqual(next_line, 13)
+
+    def test_merge_ocr_words_keeps_primary_and_adds_new_readings(self):
+        primary = [word("Switch", 100, index=0), word("Settings", 200, index=1)]
+        extra = [
+            word("Switch", 102, index=0),  # duplicate same text/location
+            word("Swltch", 102, index=1),  # different OCR reading, keep it
+            word("Search", 300, index=2),  # new word
+        ]
+
+        merged = merge_ocr_words(primary, extra)
+
+        self.assertEqual(
+            [w["text"] for w in merged],
+            ["Switch", "Settings", "Swltch", "Search"],
+        )
 
 
 if __name__ == "__main__":

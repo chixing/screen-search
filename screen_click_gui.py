@@ -261,6 +261,42 @@ def _snapshot_from_words(words, region, mode, complete, quality="fast"):
     }
 
 
+def _word_center(w):
+    return (w["x"] + w["w"] / 2, w["y"] + w["h"] / 2)
+
+
+def merge_ocr_words(primary, extra):
+    """Merge OCR passes without dropping fast-pass words.
+
+    Duplicate suppression is conservative: only same normalized text with nearby
+    centers is collapsed. Different OCR text is kept because it can help fuzzy
+    human-visible misses in either pass.
+    """
+    merged = [dict(w) for w in primary]
+    seen = []
+    for w in merged:
+        cx, cy = _word_center(w)
+        seen.append((_norm(w["text"]), cx, cy, max(w["w"], w["h"], 1)))
+
+    for w in extra:
+        nw = _norm(w["text"])
+        if not nw:
+            continue
+        cx, cy = _word_center(w)
+        duplicate = False
+        for text, sx, sy, size in seen:
+            tolerance = max(10, size * 0.35)
+            if text == nw and abs(cx - sx) <= tolerance and abs(cy - sy) <= tolerance:
+                duplicate = True
+                break
+        if duplicate:
+            continue
+        ww = dict(w)
+        merged.append(ww)
+        seen.append((nw, cx, cy, max(ww["w"], ww["h"], 1)))
+    return merged
+
+
 def _norm(s):
     return re.sub(r"[^\w]", "", s.lower())
 
@@ -268,6 +304,7 @@ def _norm(s):
 HINT_KEYS = "asdfjklghqwertyuiopzxcvbnm"
 MAX_PHRASE_WORDS = 6
 INACTIVE_MONITOR_SCALE = 1.25
+HIGH_QUALITY_MONITOR_SCALE = 3.0
 
 
 def _candidate_from_words(parts):
@@ -824,15 +861,22 @@ class App:
 
                     if active_scale > inactive_scale:
                         try:
+                            high_quality_scale = max(
+                                active_scale, HIGH_QUALITY_MONITOR_SCALE)
                             hq_words = []
                             line_offset = 0
                             for mon in ordered:
                                 shot = sct.grab(mon)
-                                words = ocr_words(shot, active_scale)
+                                words = ocr_words(shot, high_quality_scale)
                                 moved, line_offset = _offset_words(
                                     words, mon, base_region, line_offset)
                                 hq_words.extend(moved)
-                            publish(hq_words, base_region, True, "high")
+                            publish(
+                                merge_ocr_words(all_words, hq_words),
+                                base_region,
+                                True,
+                                "high",
+                            )
                         except Exception:
                             finish_without_update()
             except Exception as ex:

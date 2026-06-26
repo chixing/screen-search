@@ -27,7 +27,7 @@ Resident process (single instance, named mutex)
 6. **Click** — `SendInput` with a short press dwell, after bringing the target window to the foreground. Works across all monitors including negative coordinates.
 
 ### Key design decisions
-- **All-monitor OCR by default** — Alt+F searches the whole virtual desktop. With upscale enabled, the active monitor is OCR'd first at 2×, then the remaining monitors are OCR'd at 1.25× and merged in when complete. A high-quality background pass then re-OCRs all monitors at 2× to improve match rate.
+- **All-monitor OCR by default** — Alt+F searches the whole virtual desktop. With upscale enabled, the active monitor is OCR'd first at 2×, then the remaining monitors are OCR'd at 1.25× and merged in when complete. A high-quality background pass then re-OCRs all monitors at 3× requested scale, clamped by Windows OCR's max image size, and merges any additional readings.
 - **No PNG round-trip** — building the bitmap from raw bytes saved ~28%.
 - **Cache + filter in memory** — prefix/selector filtering as you type stays instant.
 - **Progressive refresh** — broad searches can show active-monitor matches first, expand when the fast all-monitor OCR completes, then improve again when the high-quality pass finishes.
@@ -135,6 +135,7 @@ Start-Process C:\Python314\pythonw.exe `
 
 - Windows OCR rejects images over 10,000 px in either dimension; `_effective_scale` clamps upscale accordingly.
 - `INACTIVE_MONITOR_SCALE` controls the lower scale used for non-active monitors during the fast all-monitor refresh.
+- `HIGH_QUALITY_MONITOR_SCALE` controls the requested scale for the slower all-monitor background OCR pass.
 - Overlay windows must remain `WS_EX_TRANSPARENT`, and the color key must be reapplied through `make_click_through`.
 - The OS OCR engine is the main performance cost.
 - Per-monitor DPI awareness is not implemented yet. Mixed monitor scaling can cause overlay/click coordinate drift.
