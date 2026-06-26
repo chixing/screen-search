@@ -69,6 +69,7 @@ Rust equivalents:
 | `rust\screen-search-rs\target\release\screen-search-rs.exe --toggle` | Signals the running Rust resident or cold-starts it and opens search. |
 | `rust\screen-search-rs\target\release\screen-search-rs.exe --toggle-all` | Compatibility/debug path for forcing all-monitor search. |
 | `rust\screen-search-rs\target\release\screen-search-rs.exe --quit` | Gracefully exits the Rust resident. |
+| `rust\screen-search-rs\target\release\screen-search-rs.exe --overlay-test` | Manual-only bounded 360×180 per-pixel-alpha overlay test. Do not use the full overlay path until this is verified. |
 
 The Rust port currently uses fixed defaults: scan all monitors on, contains matching on, 2× upscale on, debug OCR boxes off. Tray/settings persistence are still Python-only. Highlight overlay rendering is disabled until the layered-window transparency path is replaced or proven safe.
 
@@ -175,7 +176,7 @@ Start-Process C:\Python314\pythonw.exe `
 
 ### Remaining work
 
-- Replace or fix the Rust overlay implementation before any more runtime smoke tests. Do not create a virtual-desktop-sized layered window unless transparency is proven on a small test window first.
+- Verify `--overlay-test` manually before any more runtime smoke tests. Do not create a virtual-desktop-sized layered window unless transparency is proven on the small test window first.
 - Physical UX pass for the Rust popup/overlay after the overlay is safe.
 - Confirm physical Alt+F cold-start/resident signaling and default all-monitor capture in Rust.
 - Add OCR preprocessing variants for terminal/dark/thin text.

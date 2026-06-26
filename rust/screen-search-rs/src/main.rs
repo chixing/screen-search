@@ -20,15 +20,15 @@ use windows::Media::Ocr::OcrEngine;
 use windows::Storage::Streams::DataWriter;
 use windows::Win32::Foundation::{
     BOOL, COLORREF, CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HINSTANCE, HWND, LPARAM,
-    LRESULT, POINT, RECT, WPARAM,
+    LRESULT, POINT, RECT, SIZE, WPARAM,
 };
 use windows::Win32::Graphics::Gdi::{
-    BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BeginPaint, BitBlt, CLIP_DEFAULT_PRECIS,
-    CreateCompatibleBitmap, CreateCompatibleDC, CreateFontW, CreatePen, DEFAULT_CHARSET,
-    DEFAULT_QUALITY, DIB_RGB_COLORS, DeleteDC, DeleteObject, EndPaint, EnumDisplayMonitors,
-    FW_BOLD, FillRect, GetDC, GetDIBits, GetMonitorInfoW, GetStockObject, HBITMAP, HBRUSH, HDC,
-    HFONT, HMONITOR, InvalidateRect, MONITORINFO, OUT_DEFAULT_PRECIS, PS_SOLID, Rectangle,
-    ReleaseDC, SRCCOPY, SelectObject, SetBkMode, SetTextColor, TRANSPARENT, TextOutW, WHITE_BRUSH,
+    AC_SRC_ALPHA, AC_SRC_OVER, BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BLENDFUNCTION, BeginPaint,
+    BitBlt, CLIP_DEFAULT_PRECIS, CreateCompatibleBitmap, CreateCompatibleDC, CreateDIBSection,
+    CreateFontW, DEFAULT_CHARSET, DEFAULT_QUALITY, DIB_RGB_COLORS, DeleteDC, DeleteObject,
+    EndPaint, EnumDisplayMonitors, FW_BOLD, GetDC, GetDIBits, GetMonitorInfoW, HBITMAP, HDC, HFONT,
+    HMONITOR, MONITORINFO, OUT_DEFAULT_PRECIS, ReleaseDC, SRCCOPY, SelectObject, SetBkMode,
+    SetTextColor, TRANSPARENT, TextOutW,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::{
@@ -44,14 +44,14 @@ use windows::Win32::UI::WindowsAndMessaging::{
     BringWindowToTop, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW,
     DestroyWindow, DispatchMessageW, EN_CHANGE, FindWindowW, GA_ROOT, GetAncestor,
     GetForegroundWindow, GetMessageW, GetSystemMetrics, GetWindowRect, GetWindowTextLengthW,
-    GetWindowTextW, GetWindowThreadProcessId, HMENU, IDC_ARROW, IsWindow, LWA_COLORKEY,
-    LoadCursorW, MSG, MoveWindow, PostMessageW, PostQuitMessage, RegisterClassW,
-    SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SW_HIDE, SW_SHOW,
-    SWP_NOZORDER, SetCursorPos, SetForegroundWindow, SetLayeredWindowAttributes, SetTimer,
-    SetWindowPos, ShowWindow, TranslateMessage, WINDOW_EX_STYLE, WINDOW_STYLE, WM_ACTIVATE, WM_APP,
-    WM_COMMAND, WM_CREATE, WM_DESTROY, WM_KEYDOWN, WM_PAINT, WM_TIMER, WNDCLASSW, WS_BORDER,
-    WS_CHILD, WS_CLIPSIBLINGS, WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
-    WS_POPUP, WS_VISIBLE, WindowFromPoint,
+    GetWindowTextW, GetWindowThreadProcessId, HMENU, IDC_ARROW, IsWindow, LoadCursorW, MSG,
+    MoveWindow, PostMessageW, PostQuitMessage, RegisterClassW, SM_CXVIRTUALSCREEN,
+    SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SW_HIDE, SW_SHOW, SWP_NOZORDER,
+    SetCursorPos, SetForegroundWindow, SetTimer, SetWindowPos, ShowWindow, TranslateMessage,
+    ULW_ALPHA, UpdateLayeredWindow, WINDOW_EX_STYLE, WINDOW_STYLE, WM_ACTIVATE, WM_APP, WM_COMMAND,
+    WM_CREATE, WM_DESTROY, WM_KEYDOWN, WM_PAINT, WM_TIMER, WNDCLASSW, WS_BORDER, WS_CHILD,
+    WS_CLIPSIBLINGS, WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
+    WS_VISIBLE, WindowFromPoint,
 };
 use windows::core::{Error, PCWSTR, Result, w};
 
@@ -63,6 +63,7 @@ const MUTEX_NAME: &str = "ScreenSearchSingletonMutex";
 const INACTIVE_MONITOR_SCALE: f32 = 1.25;
 const HIGH_QUALITY_EXTRA_SCALES: &[f32] = &[2.0, 3.0];
 const OVERLAY_ENABLED: bool = false;
+const OVERLAY_TEST_SIZE: (i32, i32) = (360, 180);
 
 const WM_TOGGLE: u32 = WM_APP + 1;
 const WM_TOGGLE_ALL: u32 = WM_APP + 2;
@@ -696,12 +697,7 @@ impl App {
             );
             return;
         }
-        self.ensure_overlay();
-        if !self.overlay.0.is_null() {
-            unsafe {
-                InvalidateRect(self.overlay, None, true);
-            }
-        }
+        self.refresh_overlay();
         if self.matches.is_empty() {
             set_text(
                 self.status,
@@ -730,7 +726,7 @@ impl App {
         if !self.matches.is_empty() {
             self.selected = (self.selected + 1) % self.matches.len();
             if !self.overlay.0.is_null() {
-                unsafe { InvalidateRect(self.overlay, None, true) };
+                self.refresh_overlay();
             }
         }
     }
@@ -743,7 +739,7 @@ impl App {
                 self.selected - 1
             };
             if !self.overlay.0.is_null() {
-                unsafe { InvalidateRect(self.overlay, None, true) };
+                self.refresh_overlay();
             }
         }
     }
@@ -782,7 +778,6 @@ impl App {
                     self.region.height,
                     true,
                 );
-                ShowWindow(self.overlay, SW_SHOW);
                 return;
             }
             let Ok(hwnd) = CreateWindowExW(
@@ -802,8 +797,96 @@ impl App {
                 return;
             };
             self.overlay = hwnd;
-            let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0x00ff_ffff), 0, LWA_COLORKEY);
-            ShowWindow(hwnd, SW_SHOW);
+        }
+    }
+
+    fn refresh_overlay(&mut self) {
+        if !OVERLAY_ENABLED {
+            self.close_overlay();
+            return;
+        }
+        if self.region.width <= 0 || self.region.height <= 0 {
+            self.close_overlay();
+            return;
+        }
+        self.ensure_overlay();
+        if self.overlay.0.is_null() {
+            return;
+        }
+
+        let mut pixels = vec![0u8; (self.region.width * self.region.height * 4) as usize];
+        if self.debug_all {
+            for w in &self.all_words {
+                draw_rect_outline(
+                    &mut pixels,
+                    self.region.width,
+                    self.region.height,
+                    w.x.round() as i32,
+                    w.y.round() as i32,
+                    (w.x + w.w).round() as i32,
+                    (w.y + w.h).round() as i32,
+                    1,
+                    (58, 123, 213, 150),
+                );
+            }
+        }
+
+        for (i, m) in self.matches.iter().enumerate() {
+            let selected = i == self.selected;
+            let color = if selected {
+                (34, 197, 94, 255)
+            } else {
+                (251, 146, 60, 245)
+            };
+            draw_rect_outline(
+                &mut pixels,
+                self.region.width,
+                self.region.height,
+                m.x.round() as i32 - 4,
+                m.y.round() as i32 - 4,
+                (m.x + m.w).round() as i32 + 4,
+                (m.y + m.h).round() as i32 + 4,
+                if selected { 5 } else { 3 },
+                (17, 24, 39, 240),
+            );
+            draw_rect_outline(
+                &mut pixels,
+                self.region.width,
+                self.region.height,
+                m.x.round() as i32 - 3,
+                m.y.round() as i32 - 3,
+                (m.x + m.w).round() as i32 + 3,
+                (m.y + m.h).round() as i32 + 3,
+                if selected { 3 } else { 2 },
+                color,
+            );
+            if !m.hint.is_empty() {
+                let label_y = if m.y > 22.0 {
+                    m.y.round() as i32 - 20
+                } else {
+                    (m.y + m.h).round() as i32 + 3
+                };
+                draw_filled_rect(
+                    &mut pixels,
+                    self.region.width,
+                    self.region.height,
+                    m.x.round() as i32,
+                    label_y,
+                    m.x.round() as i32 + 24,
+                    label_y + 16,
+                    color,
+                );
+            }
+        }
+
+        if unsafe { update_layered_overlay(self.overlay, self.region, &pixels, &self.matches) }
+            .is_ok()
+        {
+            unsafe {
+                ShowWindow(self.overlay, SW_SHOW);
+            }
+        } else {
+            self.close_overlay();
         }
     }
 
@@ -817,95 +900,284 @@ impl App {
     }
 
     fn paint_overlay(&self, hwnd: HWND) {
-        unsafe {
-            let mut ps = zeroed();
-            let hdc = BeginPaint(hwnd, &mut ps);
-            let white = HBRUSH(GetStockObject(WHITE_BRUSH).0);
-            FillRect(hdc, &ps.rcPaint, white);
+        let _ = hwnd;
+    }
+}
 
-            if self.debug_all {
-                let pen = CreatePen(PS_SOLID, 1, rgb(58, 123, 213));
-                let old = SelectObject(hdc, pen);
-                for w in &self.all_words {
-                    Rectangle(
-                        hdc,
-                        w.x.round() as i32,
-                        w.y.round() as i32,
-                        (w.x + w.w).round() as i32,
-                        (w.y + w.h).round() as i32,
-                    );
-                }
-                SelectObject(hdc, old);
-                DeleteObject(pen);
-            }
+fn premul_channel(channel: u8, alpha: u8) -> u8 {
+    ((channel as u16 * alpha as u16 + 127) / 255) as u8
+}
 
-            let font = CreateFontW(
-                -14,
-                0,
-                0,
-                0,
-                FW_BOLD.0 as i32,
-                0,
-                0,
-                0,
-                DEFAULT_CHARSET.0 as u32,
-                OUT_DEFAULT_PRECIS.0 as u32,
-                CLIP_DEFAULT_PRECIS.0 as u32,
-                DEFAULT_QUALITY.0 as u32,
-                0,
-                w!("Segoe UI"),
-            );
-            let old_font = SelectObject(hdc, HFONT(font.0));
-            SetBkMode(hdc, TRANSPARENT);
-            for (i, m) in self.matches.iter().enumerate() {
-                let selected = i == self.selected;
-                let color = if selected {
-                    rgb(34, 197, 94)
-                } else {
-                    rgb(251, 146, 60)
-                };
-                let outer = CreatePen(PS_SOLID, if selected { 5 } else { 3 }, rgb(17, 24, 39));
-                let inner = CreatePen(PS_SOLID, if selected { 3 } else { 2 }, color);
-                let old_pen = SelectObject(hdc, outer);
-                Rectangle(
-                    hdc,
-                    m.x.round() as i32 - 4,
-                    m.y.round() as i32 - 4,
-                    (m.x + m.w).round() as i32 + 4,
-                    (m.y + m.h).round() as i32 + 4,
-                );
-                SelectObject(hdc, inner);
-                Rectangle(
-                    hdc,
-                    m.x.round() as i32 - 3,
-                    m.y.round() as i32 - 3,
-                    (m.x + m.w).round() as i32 + 3,
-                    (m.y + m.h).round() as i32 + 3,
-                );
-                SelectObject(hdc, old_pen);
-                DeleteObject(outer);
-                DeleteObject(inner);
-                if !m.hint.is_empty() {
-                    let label = m.hint.to_uppercase();
-                    let ws = wide(&label);
-                    SetTextColor(hdc, color);
-                    let y = if m.y > 22.0 {
-                        m.y - 18.0
-                    } else {
-                        m.y + m.h + 3.0
-                    };
-                    TextOutW(
-                        hdc,
-                        m.x.round() as i32,
-                        y.round() as i32,
-                        &ws[..ws.len() - 1],
-                    );
-                }
-            }
-            SelectObject(hdc, old_font);
-            DeleteObject(font);
-            EndPaint(hwnd, &ps);
+fn put_pixel(buf: &mut [u8], width: i32, height: i32, x: i32, y: i32, rgba: (u8, u8, u8, u8)) {
+    if x < 0 || y < 0 || x >= width || y >= height {
+        return;
+    }
+    let idx = ((y * width + x) * 4) as usize;
+    let (r, g, b, a) = rgba;
+    buf[idx] = premul_channel(b, a);
+    buf[idx + 1] = premul_channel(g, a);
+    buf[idx + 2] = premul_channel(r, a);
+    buf[idx + 3] = a;
+}
+
+fn draw_filled_rect(
+    buf: &mut [u8],
+    width: i32,
+    height: i32,
+    x1: i32,
+    y1: i32,
+    x2: i32,
+    y2: i32,
+    rgba: (u8, u8, u8, u8),
+) {
+    let left = x1.max(0).min(width);
+    let right = x2.max(0).min(width);
+    let top = y1.max(0).min(height);
+    let bottom = y2.max(0).min(height);
+    for y in top..bottom {
+        for x in left..right {
+            put_pixel(buf, width, height, x, y, rgba);
         }
+    }
+}
+
+fn draw_rect_outline(
+    buf: &mut [u8],
+    width: i32,
+    height: i32,
+    x1: i32,
+    y1: i32,
+    x2: i32,
+    y2: i32,
+    stroke: i32,
+    rgba: (u8, u8, u8, u8),
+) {
+    for n in 0..stroke.max(1) {
+        draw_filled_rect(buf, width, height, x1 + n, y1 + n, x2 - n, y1 + n + 1, rgba);
+        draw_filled_rect(buf, width, height, x1 + n, y2 - n - 1, x2 - n, y2 - n, rgba);
+        draw_filled_rect(buf, width, height, x1 + n, y1 + n, x1 + n + 1, y2 - n, rgba);
+        draw_filled_rect(buf, width, height, x2 - n - 1, y1 + n, x2 - n, y2 - n, rgba);
+    }
+}
+
+unsafe fn update_layered_overlay(
+    hwnd: HWND,
+    region: Region,
+    pixels: &[u8],
+    matches: &[Candidate],
+) -> Result<()> {
+    let screen = GetDC(None);
+    if screen.0.is_null() {
+        return Err(Error::from_win32());
+    }
+    let mem = CreateCompatibleDC(screen);
+    if mem.0.is_null() {
+        ReleaseDC(None, screen);
+        return Err(Error::from_win32());
+    }
+
+    let bmi = BITMAPINFO {
+        bmiHeader: BITMAPINFOHEADER {
+            biSize: size_of::<BITMAPINFOHEADER>() as u32,
+            biWidth: region.width,
+            biHeight: -region.height,
+            biPlanes: 1,
+            biBitCount: 32,
+            biCompression: BI_RGB.0,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let mut bits: *mut c_void = std::ptr::null_mut();
+    let bitmap = CreateDIBSection(screen, &bmi, DIB_RGB_COLORS, &mut bits, None, 0)?;
+    if bits.is_null() {
+        DeleteDC(mem);
+        ReleaseDC(None, screen);
+        return Err(Error::from_win32());
+    }
+    std::ptr::copy_nonoverlapping(pixels.as_ptr(), bits as *mut u8, pixels.len());
+
+    let old = SelectObject(mem, HBITMAP(bitmap.0));
+    draw_hint_text(mem, matches);
+
+    let dst = POINT {
+        x: region.left,
+        y: region.top,
+    };
+    let size = SIZE {
+        cx: region.width,
+        cy: region.height,
+    };
+    let src = POINT { x: 0, y: 0 };
+    let blend = BLENDFUNCTION {
+        BlendOp: AC_SRC_OVER as u8,
+        BlendFlags: 0,
+        SourceConstantAlpha: 255,
+        AlphaFormat: AC_SRC_ALPHA as u8,
+    };
+
+    let result = UpdateLayeredWindow(
+        hwnd,
+        screen,
+        Some(&dst),
+        Some(&size),
+        mem,
+        Some(&src),
+        COLORREF(0),
+        Some(&blend),
+        ULW_ALPHA,
+    );
+
+    SelectObject(mem, old);
+    DeleteObject(bitmap);
+    DeleteDC(mem);
+    ReleaseDC(None, screen);
+    result
+}
+
+unsafe fn draw_hint_text(hdc: HDC, matches: &[Candidate]) {
+    let font = CreateFontW(
+        -13,
+        0,
+        0,
+        0,
+        FW_BOLD.0 as i32,
+        0,
+        0,
+        0,
+        DEFAULT_CHARSET.0 as u32,
+        OUT_DEFAULT_PRECIS.0 as u32,
+        CLIP_DEFAULT_PRECIS.0 as u32,
+        DEFAULT_QUALITY.0 as u32,
+        0,
+        w!("Segoe UI"),
+    );
+    let old_font = SelectObject(hdc, HFONT(font.0));
+    SetBkMode(hdc, TRANSPARENT);
+    SetTextColor(hdc, rgb(17, 24, 39));
+    for m in matches {
+        if m.hint.is_empty() {
+            continue;
+        }
+        let label = m.hint.to_uppercase();
+        let ws = wide(&label);
+        let y = if m.y > 22.0 {
+            m.y.round() as i32 - 19
+        } else {
+            (m.y + m.h).round() as i32 + 4
+        };
+        TextOutW(hdc, m.x.round() as i32 + 4, y, &ws[..ws.len() - 1]);
+    }
+    SelectObject(hdc, old_font);
+    DeleteObject(font);
+}
+
+fn test_candidate(text: &str, hint: &str, x: f32, y: f32, w: f32, h: f32) -> Candidate {
+    Candidate {
+        text: text.to_string(),
+        x,
+        y,
+        w,
+        h,
+        line: 0,
+        word: 0,
+        word_count: 1,
+        n: norm(text),
+        hint: hint.to_string(),
+        selector: hint.to_string(),
+        hint_typed: String::new(),
+        sx: 0,
+        sy: 0,
+    }
+}
+
+fn run_overlay_test() -> Result<()> {
+    unsafe {
+        let hinstance = HINSTANCE(GetModuleHandleW(None)?.0);
+        let cursor = LoadCursorW(None, IDC_ARROW)?;
+        RegisterClassW(&WNDCLASSW {
+            hCursor: cursor,
+            hInstance: hinstance,
+            lpszClassName: w!("ScreenSearchRustOverlay"),
+            style: CS_HREDRAW | CS_VREDRAW,
+            lpfnWndProc: Some(overlay_proc),
+            ..Default::default()
+        });
+
+        let mon = cursor_monitor().unwrap_or(Monitor {
+            region: virtual_region(),
+        });
+        let (w, h) = OVERLAY_TEST_SIZE;
+        let region = Region {
+            left: mon.region.left + (mon.region.width - w) / 2,
+            top: mon.region.top + (mon.region.height - h) / 2,
+            width: w,
+            height: h,
+        };
+        let hwnd = CreateWindowExW(
+            WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_TRANSPARENT,
+            w!("ScreenSearchRustOverlay"),
+            w!("Screen Search Overlay Test"),
+            WS_POPUP,
+            region.left,
+            region.top,
+            region.width,
+            region.height,
+            None,
+            None,
+            hinstance,
+            None,
+        )?;
+
+        let matches = vec![
+            test_candidate("Overlay", "aa", 32.0, 42.0, 92.0, 28.0),
+            test_candidate("Test", "sf", 166.0, 94.0, 72.0, 26.0),
+        ];
+        let mut pixels = vec![0u8; (region.width * region.height * 4) as usize];
+        draw_rect_outline(
+            &mut pixels,
+            region.width,
+            region.height,
+            1,
+            1,
+            region.width - 1,
+            region.height - 1,
+            2,
+            (34, 197, 94, 220),
+        );
+        for (i, m) in matches.iter().enumerate() {
+            let color = if i == 0 {
+                (34, 197, 94, 255)
+            } else {
+                (251, 146, 60, 245)
+            };
+            draw_rect_outline(
+                &mut pixels,
+                region.width,
+                region.height,
+                m.x.round() as i32 - 4,
+                m.y.round() as i32 - 4,
+                (m.x + m.w).round() as i32 + 4,
+                (m.y + m.h).round() as i32 + 4,
+                3,
+                color,
+            );
+            draw_filled_rect(
+                &mut pixels,
+                region.width,
+                region.height,
+                m.x.round() as i32,
+                m.y.round() as i32 - 20,
+                m.x.round() as i32 + 24,
+                m.y.round() as i32 - 4,
+                color,
+            );
+        }
+        update_layered_overlay(hwnd, region, &pixels, &matches)?;
+        ShowWindow(hwnd, SW_SHOW);
+        thread::sleep(Duration::from_secs(3));
+        DestroyWindow(hwnd);
+        Ok(())
     }
 }
 
@@ -1332,6 +1604,10 @@ fn run() -> Result<()> {
         let _ = RoInitialize(RO_INIT_MULTITHREADED);
     }
     let args = std::env::args().collect::<Vec<_>>();
+    let overlay_test = args.iter().any(|a| a == "--overlay-test");
+    if overlay_test {
+        return run_overlay_test();
+    }
     let toggle = args.iter().any(|a| a == "--toggle");
     let toggle_all = args.iter().any(|a| a == "--toggle-all");
     let quit = args.iter().any(|a| a == "--quit");
