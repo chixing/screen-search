@@ -10,7 +10,7 @@ Flow:
 Visual feedback:
   orange box   = a match
   green box    = currently selected match
-  red pulse    = the click actually firing
+  small pulse  = the click actually firing
 
 OCR uses Windows' BUILT-IN engine (Windows.Media.Ocr via winsdk).
 Overlays are input-transparent (WS_EX_TRANSPARENT) so they never eat the click.
@@ -409,7 +409,7 @@ def search(query, all_monitors=False, whole_word=True, scale=1.0):
 
 # ---------- click confirmation pulse ------------------------------
 def flash_click(root, x, y):
-    size = 118
+    size = 64
     ov = tk.Toplevel(root)
     ov.overrideredirect(True)
     ov.attributes("-topmost", True)
@@ -423,26 +423,14 @@ def flash_click(root, x, y):
 
     def animate(step=0):
         cv.delete("all")
-        if step > 11:
+        if step > 4:
             ov.destroy()
             return
-        t = step / 11
-        r1 = 10 + t * 42
-        r2 = 4 + t * 24
-        outer = "#22c55e" if step < 7 else "#60a5fa"
-        inner = "#0f172a"
-        width = max(1, int(4 - t * 3))
-        cv.create_oval(c - r1, c - r1, c + r1, c + r1,
-                       outline=outer, width=width)
-        cv.create_oval(c - r2, c - r2, c + r2, c + r2,
-                       outline="#f8fafc", width=2)
-        cv.create_oval(c - 4, c - 4, c + 4, c + 4,
-                       fill=inner, outline="#f8fafc", width=1)
-        tick = 14 + t * 8
-        cv.create_line(c - tick, c, c - 6, c, fill=outer, width=2)
-        cv.create_line(c + 6, c, c + tick, c, fill=outer, width=2)
-        cv.create_line(c, c - tick, c, c - 6, fill=outer, width=2)
-        cv.create_line(c, c + 6, c, c + tick, fill=outer, width=2)
+        r = 7 + step * 4
+        cv.create_oval(c - r, c - r, c + r, c + r,
+                       outline="#22c55e", width=2)
+        cv.create_oval(c - 3, c - 3, c + 3, c + 3,
+                       fill="#22c55e", outline="")
         ov.after(24, lambda: animate(step + 1))
 
     animate()
