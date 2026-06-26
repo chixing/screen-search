@@ -87,7 +87,6 @@ const THEME_STATUS: (u8, u8, u8) = (253, 186, 116);
 const THEME_SELECTED: (u8, u8, u8) = (34, 197, 94);
 const THEME_INK: (u8, u8, u8) = (15, 23, 42);
 const THEME_LABEL_BG: (u8, u8, u8) = (15, 23, 42);
-const THEME_LABEL_TEXT: (u8, u8, u8) = (255, 234, 0);
 const THEME_LABEL_BORDER: (u8, u8, u8) = (0, 0, 0);
 const POPUP_W: i32 = 360;
 const POPUP_H: i32 = 72;
@@ -1381,8 +1380,16 @@ impl App {
         }
 
         trace_log("refresh_overlay: update_layered_overlay");
-        if unsafe { update_layered_overlay(self.overlay, self.region, &pixels, &self.matches) }
-            .is_ok()
+        if unsafe {
+            update_layered_overlay(
+                self.overlay,
+                self.region,
+                &pixels,
+                &self.matches,
+                self.selected,
+            )
+        }
+        .is_ok()
         {
             trace_log("refresh_overlay: update done");
             if self.popup_visible {
@@ -1525,6 +1532,7 @@ unsafe fn update_layered_overlay(
     region: Region,
     pixels: &[u8],
     matches: &[Candidate],
+    selected: usize,
 ) -> Result<()> {
     trace_log(format!(
         "update_layered_overlay: enter region={}x{} pixels={} matches={}",
@@ -1570,7 +1578,7 @@ unsafe fn update_layered_overlay(
 
     let old = SelectObject(mem, HBITMAP(bitmap.0));
     trace_log("update_layered_overlay: draw hint text");
-    draw_hint_text(mem, matches);
+    draw_hint_text(mem, matches, selected);
     force_label_alpha(
         std::slice::from_raw_parts_mut(bits as *mut u8, pixels.len()),
         region.width,
@@ -1618,7 +1626,7 @@ unsafe fn update_layered_overlay(
     result
 }
 
-unsafe fn draw_hint_text(hdc: HDC, matches: &[Candidate]) {
+unsafe fn draw_hint_text(hdc: HDC, matches: &[Candidate], selected: usize) {
     let font = CreateFontW(
         -13,
         0,
@@ -1637,11 +1645,16 @@ unsafe fn draw_hint_text(hdc: HDC, matches: &[Candidate]) {
     );
     let old_font = SelectObject(hdc, HFONT(font.0));
     SetBkMode(hdc, TRANSPARENT);
-    SetTextColor(hdc, rgb_tuple(THEME_LABEL_TEXT));
-    for m in matches {
+    for (i, m) in matches.iter().enumerate() {
         if m.hint.is_empty() {
             continue;
         }
+        let text_color = if i == selected {
+            THEME_SELECTED
+        } else {
+            THEME_ACCENT
+        };
+        SetTextColor(hdc, rgb_tuple(text_color));
         let label = m.hint.to_uppercase();
         let ws = wide(&label);
         let (left, top, _, _) = label_rect(m);
@@ -1743,7 +1756,7 @@ fn run_overlay_test() -> Result<()> {
             );
             draw_label_background(&mut pixels, region.width, region.height, m);
         }
-        update_layered_overlay(hwnd, region, &pixels, &matches)?;
+        update_layered_overlay(hwnd, region, &pixels, &matches, 0)?;
         ShowWindow(hwnd, SW_SHOW);
         thread::sleep(Duration::from_secs(3));
         DestroyWindow(hwnd);
