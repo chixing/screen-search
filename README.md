@@ -1,8 +1,8 @@
 # Screen Search
 
-A Windows utility that lets you find visible on-screen text with OCR and click it from the keyboard. Summon a search box with a hotkey, type a query, cycle through highlighted matches, and press Enter to click the selected result.
+A Windows utility that lets you find visible on-screen text with OCR and click it from the keyboard. Summon a search box with a hotkey, type a visible text prefix, narrow with the displayed selector letters, and press Enter to click the selected result.
 
-Single file: [`screen_click_gui.py`](screen_click_gui.py). Python 3.14, Windows only.
+Main app: [`screen_click_gui.py`](screen_click_gui.py). Python 3.14, Windows only. Matcher tests live in [`test_matcher.py`](test_matcher.py).
 
 ---
 
@@ -23,13 +23,15 @@ Resident process (single instance, named mutex)
 1. **Capture** — `mss` grabs the monitor under the cursor (or all monitors if enabled). Raw BGRA pixels.
 2. **OCR** — Windows' built-in engine (`Windows.Media.Ocr` via `winsdk`). The raw BGRA is turned straight into a `SoftwareBitmap` (no PNG encode/decode). Optional 2× upscale for small text (clamped to the engine's 10000 px max dimension).
 3. **Snapshot cache** — OCR runs **once** when you start typing; every keystroke filters the cached OCR result in memory (200 ms debounce). No re-OCR per keystroke.
-4. **Highlight** — a click-through (`WS_EX_TRANSPARENT`) overlay covering the captured monitor draws a red box per match; the selected one is green.
-5. **Click** — `SendInput` with a short press dwell, after bringing the target window to the foreground. Works across all monitors including negative coordinates.
+4. **Match + select** — OCR words are grouped into same-line phrase candidates. Spaces and punctuation are ignored for matching, so `openf` and `open f` can both match `Open File`. Each highlighted match gets a short selector suffix; typing selector letters disqualifies nonmatching highlights but never clicks.
+5. **Highlight** — a click-through (`WS_EX_TRANSPARENT`) overlay covering the captured monitor draws a red box per match; the selected one is green. Overlay labels show the normalized prefix plus selector suffix.
+6. **Click** — `SendInput` with a short press dwell, after bringing the target window to the foreground. Works across all monitors including negative coordinates.
 
 ### Key design decisions
 - **Active-monitor OCR by default** — OCR cost scales with pixels; scanning one monitor instead of the whole 7280-px desktop is ~5× faster (~150 ms vs ~750 ms).
 - **No PNG round-trip** — building the bitmap from raw bytes saved ~28%.
-- **Cache + filter in memory** — substring search as you type stays instant.
+- **Cache + filter in memory** — prefix/selector filtering as you type stays instant.
+- **Enter is the only action key** — typed selector letters only focus/narrow highlights. They do not click.
 - **Overlays are input-transparent** — so the synthetic click passes through to the real target, and the highlight never steals the click.
 - **Language**: Python is NOT the bottleneck — the OS OCR engine is, and that's language-independent. A C#/Rust rewrite would only help distribution and a flicker-free native overlay, not raw speed.
 
@@ -55,7 +57,8 @@ pip install mss pillow winsdk pystray
 - **Alt+F** is owned by `komorebi.ahk` and runs `--toggle`.
 - **Alt+Shift+F** is owned by `komorebi.ahk` and runs `--toggle-all`.
 - Tray → Search and `--toggle` use the configured monitor setting.
-- Type to filter (substring by default). Matches highlight live.
+- Type a visible text prefix. Matches highlight live with selector labels.
+- Keep typing selector letters to disqualify other highlights. Spaces in your input do not break phrase matches.
 - **Tab / Shift+Tab** cycle the selection (green box).
 - **Enter** clicks the selected match.
 - **Esc** or clicking away dismisses it.
@@ -63,13 +66,13 @@ pip install mss pillow winsdk pystray
 
 ### Settings (tray → Settings, or launch with no flag)
 - **Scan all monitors** — OCR the whole virtual desktop instead of just the active monitor (slower).
-- **Whole word only** — off = substring matching (default), on = exact token match.
+- **Exact text only** — off = prefix + selector matching (default), on = exact normalized text.
 - **Upscale 2× for small text** — better OCR accuracy on thin/terminal fonts (default on).
 - **Show all OCR words (debug)** — faint blue box around every detected word, to tell an OCR miss from a match miss.
 
-### Current search limitation
+### Search behavior
 
-Matching currently operates on individual OCR words. A query containing spaces does not yet match a phrase across adjacent words. Multi-word phrase matching is the highest-priority feature in [TODO.md](TODO.md).
+The popup matches OCR words and adjacent same-line phrases. Matching is normalized: case, spaces, and punctuation are ignored. For example, `open f` and `openf` both match `Open File`. Selector suffixes are generated for the currently highlighted matches; typing selector characters narrows/focuses the highlight, and Enter performs the click.
 
 ---
 

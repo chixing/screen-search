@@ -2,7 +2,7 @@
 
 ## Required next feature
 
-- [ ] **Multi-word phrase matching.** Match a query such as `open file` across adjacent OCR words on the same line. Build phrase candidates in reading order, tolerate normal inter-word gaps, combine their bounding boxes for highlighting, and click the center of the combined phrase. Preserve existing single-word substring and whole-word behavior.
+- [ ] **Physical UX pass for prefix + selector mode.** Validate on real windows that selector labels are readable, first selector chars narrow quickly enough, and phrase bounds click the intended target center.
 
 ## Verification
 
@@ -26,5 +26,6 @@
 ## Known facts / gotchas
 - Win+Alt+G and Ctrl+Alt+G are **already registered by another app** on this machine (RegisterHotKey err 1409) — do not reuse them.
 - `komorebi.ahk` owns Alt+F and Alt+Shift+F. Screen Search does not call `RegisterHotKey`.
+- Prefix + selector matching is implemented in the popup path. Matching ignores spaces/punctuation, builds same-line phrase candidates, and only clicks on Enter.
 - Windows OCR **max image dimension is 10000 px** — full-desktop 2× upscale is auto-clamped (~1.37× for the 7280-px desktop); active-monitor gets full 2×.
 - No Screen Search Startup entry is required. The first AHK hotkey press cold-starts the resident.

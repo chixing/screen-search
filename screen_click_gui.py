@@ -2,14 +2,14 @@
 Screen Search + Click  --  GUI prototype.
 
 Flow:
-  1. Type a word, press Enter (or click "Find").
-  2. Every exact-word match gets a NUMBERED red box. The highlight STAYS.
-  3. Press Tab / Shift+Tab to move the green selection between matches.
-  4. Press Enter to click the selected match. Press Esc to cancel.
+  1. Type a visible text prefix.
+  2. Matching words/phrases get red boxes plus a short selector label.
+  3. Keep typing the selector letters to disqualify other highlights.
+  4. Press Enter to click the focused match. Press Esc to cancel.
 
 Visual feedback:
   red box      = a match
-  green box + crosshair = currently selected match
+  green box    = currently selected match
   red pulse    = the click actually firing
 
 OCR uses Windows' BUILT-IN engine (Windows.Media.Ocr via winsdk).
@@ -201,11 +201,12 @@ def ocr_words(shot, scale=1.0):
     result = asyncio.run(_recognize(_bitmap_from_shot(shot, scale)))
     inv = 1.0 / scale
     words = []
-    for line in result.lines:
-        for w in line.words:
+    for line_no, line in enumerate(result.lines):
+        for word_no, w in enumerate(line.words):
             r = w.bounding_rect
             words.append({"text": w.text, "x": r.x * inv, "y": r.y * inv,
-                          "w": r.width * inv, "h": r.height * inv})
+                          "w": r.width * inv, "h": r.height * inv,
+                          "line": line_no, "word": word_no})
     return words
 
 
@@ -231,6 +232,126 @@ def grab_screen(all_monitors=False):
 
 def _norm(s):
     return re.sub(r"[^\w]", "", s.lower())
+
+
+HINT_KEYS = "asdfjklghqwertyuiopzxcvbnm"
+MAX_PHRASE_WORDS = 6
+
+
+def _candidate_from_words(parts):
+    x1 = min(w["x"] for w in parts)
+    y1 = min(w["y"] for w in parts)
+    x2 = max(w["x"] + w["w"] for w in parts)
+    y2 = max(w["y"] + w["h"] for w in parts)
+    text = " ".join(w["text"] for w in parts)
+    return {
+        "text": text,
+        "x": x1,
+        "y": y1,
+        "w": x2 - x1,
+        "h": y2 - y1,
+        "n": _norm(text),
+        "line": parts[0].get("line", 0),
+        "word": parts[0].get("word", 0),
+        "word_count": len(parts),
+    }
+
+
+def build_text_candidates(words, max_words=MAX_PHRASE_WORDS):
+    """Build single-word and adjacent same-line phrase targets.
+
+    OCR returns words, but visible UI labels often span words. Candidate text is
+    normalized without spaces, so "openf" and "open f" can match "Open File".
+    """
+    lines = {}
+    for fallback_index, w in enumerate(words):
+        line_no = w.get("line", 0)
+        ww = dict(w)
+        ww.setdefault("word", fallback_index)
+        lines.setdefault(line_no, []).append(ww)
+
+    candidates = []
+    for line_no in sorted(lines):
+        line = sorted(lines[line_no], key=lambda w: (w.get("word", 0), w["x"]))
+        for start in range(len(line)):
+            parts = []
+            for end in range(start, min(len(line), start + max_words)):
+                parts.append(line[end])
+                c = _candidate_from_words(parts)
+                if c["n"]:
+                    candidates.append(c)
+    candidates.sort(key=lambda c: (c["y"], c["x"], c["word_count"]))
+    return candidates
+
+
+def _text_prefix_matches(query, candidates, exact=False):
+    """Return the shortest viable candidate for each same-line start word."""
+    by_start = {}
+    for c in candidates:
+        hit = (c["n"] == query) if exact else c["n"].startswith(query)
+        if not hit:
+            continue
+        key = (c["line"], c["word"])
+        prev = by_start.get(key)
+        if prev is None or c["word_count"] < prev["word_count"]:
+            by_start[key] = c
+    return sorted(by_start.values(), key=lambda c: (c["y"], c["x"]))
+
+
+def _hint_code(index, first_chars):
+    first_chars = first_chars or HINT_KEYS
+    second_chars = HINT_KEYS
+    width = len(first_chars)
+    if index < width * len(second_chars):
+        return first_chars[index % width] + second_chars[index // width]
+    index -= width * len(second_chars)
+    return (first_chars[index % width]
+            + second_chars[index // width % len(second_chars)]
+            + second_chars[index // (width * len(second_chars))
+                           % len(second_chars)])
+
+
+def assign_hints(matches, base_query):
+    """Attach collision-aware selector suffixes to currently highlighted matches."""
+    next_chars = {
+        m["n"][len(base_query)]
+        for m in matches
+        if len(m["n"]) > len(base_query)
+    }
+    first_chars = "".join(k for k in HINT_KEYS if k not in next_chars)
+    hinted = []
+    for i, m in enumerate(matches):
+        h = _hint_code(i, first_chars)
+        mm = dict(m)
+        mm["hint"] = h
+        mm["selector"] = base_query + h
+        mm["hint_base"] = base_query
+        hinted.append(mm)
+    return hinted
+
+
+def resolve_selector_matches(query, candidates, hint_context=None, exact=False):
+    """Resolve normalized user input into visible text or selector matches.
+
+    Text-prefix matching wins. If the input stops matching visible text, the
+    previous text-prefix context is reused and the extra chars filter selector
+    suffixes. Enter is handled elsewhere; this function only narrows focus.
+    """
+    text_matches = _text_prefix_matches(query, candidates, exact=exact)
+    if text_matches:
+        matches = assign_hints(text_matches, query)
+        return matches, {"base": query, "matches": matches}, ""
+
+    if hint_context is not None and query.startswith(hint_context["base"]):
+        hint_suffix = query[len(hint_context["base"]):]
+        matches = [
+            dict(m, selector=hint_context["base"] + m["hint"])
+            for m in hint_context["matches"]
+            if m["hint"].startswith(hint_suffix)
+        ]
+        return matches, hint_context, hint_suffix
+
+    return [], None, ""
 
 
 def search(query, all_monitors=False, whole_word=True, scale=1.0):
@@ -303,6 +424,7 @@ class App:
         self.ov_origin = (0, 0)
         self.snap = None
         self.capturing = False
+        self.hint_context = None
         self._last_query = ""
         self._debounce_id = None
         self.popup_visible = False
@@ -343,14 +465,15 @@ class App:
         cmd.insert(0, make_toggle_command())
         cmd.configure(state="readonly")
         cmd.pack(fill="x", pady=(4, 6))
-        ttk.Label(frm, text="In the search box: type to filter, Tab to cycle, "
-                            "Enter to click, Esc to close.",
+        ttk.Label(frm, text="In the search box: type a prefix, keep typing "
+                            "selector letters to narrow, Enter to click, "
+                            "Esc to close.",
                   foreground="#555", wraplength=410,
                   justify="left").pack(anchor="w", pady=(0, 10))
 
         ttk.Checkbutton(frm, text="Scan all monitors (slower)",
                         variable=self.all_monitors).pack(anchor="w")
-        ttk.Checkbutton(frm, text="Whole word only (off = substring)",
+        ttk.Checkbutton(frm, text="Exact text only (off = prefix + selectors)",
                         variable=self.whole_word,
                         command=self._refilter).pack(anchor="w")
         ttk.Checkbutton(frm, text="Upscale 2x for small text (more accurate)",
@@ -623,7 +746,9 @@ class App:
                 return
             for w in words:                   # pre-normalize for fast filtering
                 w["n"] = _norm(w["text"])
-            self.snap = {"words": words, "region": region, "winrect": win_rect}
+            candidates = build_text_candidates(words)
+            self.snap = {"words": words, "candidates": candidates,
+                         "region": region, "winrect": win_rect}
             self.capturing = False
             self.root.after(0, self._live_filter)
 
@@ -640,6 +765,7 @@ class App:
         text = self.entry.get().strip()
         q = _norm(text)
         if not q:
+            self.hint_context = None
             self._close_overlay()
             return
         whole = self.whole_word.get()
@@ -647,40 +773,47 @@ class App:
         off_x, off_y = region[0], region[1]
         wr = self.snap["winrect"]
         words = self.snap["words"]
-        matches = []
-        for w in words:
-            if not ((w["n"] == q) if whole else (q in w["n"])):
-                continue
-            sx = int(w["x"] + w["w"] / 2 + off_x)
-            sy = int(w["y"] + w["h"] / 2 + off_y)
-            if wr[0] <= sx <= wr[2] and wr[1] <= sy <= wr[3]:
-                continue   # skip matches sitting on our own window
-            m = dict(w)
-            m["sx"], m["sy"] = sx, sy
-            matches.append(m)
+        candidates = self.snap["candidates"]
+        matches, self.hint_context, hint_suffix = resolve_selector_matches(
+            q, candidates, self.hint_context, exact=whole)
 
-        self.matches = matches
+        filtered = []
+        for m in matches:
+            sx = int(m["x"] + m["w"] / 2 + off_x)
+            sy = int(m["y"] + m["h"] / 2 + off_y)
+            if wr[0] <= sx <= wr[2] and wr[1] <= sy <= wr[3]:
+                continue
+            m = dict(m)
+            m["sx"], m["sy"] = sx, sy
+            m["hint_typed"] = hint_suffix
+            filtered.append(m)
+
+        self.matches = filtered
         self.region = region
         self.off_x, self.off_y = off_x, off_y
         self.all_words = words
-        if self.selected >= len(matches):
+        if self.selected >= len(filtered):
+            self.selected = 0
+        if len(filtered) == 1:
             self.selected = 0
 
-        if not matches and not self.debug_all.get():
+        if not filtered and not self.debug_all.get():
             self._close_overlay()
             self.set_status(f"No match for '{text}' ({len(words)} words read).")
             return
         self._ensure_overlay()
         self._draw_overlay()
-        if matches:
-            self.set_status(f"{len(matches)} match(es) for '{text}'.  "
-                            f"Tab = cycle, Enter = click, Esc = clear.")
+        if filtered:
+            mode = "selector" if hint_suffix else "text"
+            self.set_status(f"{len(filtered)} {mode} match(es) for '{text}'.  "
+                            f"Type selector letters to narrow; Enter = click.")
         else:
             self.set_status(f"No match -- showing all {len(words)} OCR words.")
 
     def _recapture(self, e=None):
         """Force a fresh OCR snapshot (use after the screen behind changed)."""
         self.snap = None
+        self.hint_context = None
         self._close_overlay()
         if self.entry.get().strip():
             self._capture_then_filter()
@@ -757,6 +890,16 @@ class App:
             color = "#00ff66" if sel else "#ff3030"
             cv.create_rectangle(x1 - 3, y1 - 3, x2 + 3, y2 + 3,
                                 outline=color, width=4 if sel else 2)
+            selector = m.get("selector")
+            if selector:
+                label_y = y1 - 7 if y1 > 24 else y2 + 18
+                text_id = cv.create_text(
+                    x1 - 3, label_y, text=selector.upper(), anchor="sw",
+                    fill="#ffffff", font=("Segoe UI", 10, "bold"))
+                bx1, by1, bx2, by2 = cv.bbox(text_id)
+                cv.create_rectangle(bx1 - 4, by1 - 2, bx2 + 4, by2 + 2,
+                                    fill=color, outline=color)
+                cv.tag_raise(text_id)
 
     def _close_overlay(self):
         if self.overlay is not None:
