@@ -2,7 +2,7 @@
 Screen Search + Click  --  GUI prototype.
 
 Flow:
-  1. Type a visible text prefix.
+  1. Type visible text from the beginning or middle of a word/phrase.
   2. Matching words/phrases get boxes plus a short selector label.
   3. Keep typing the selector letters to disqualify other highlights.
   4. Press Enter to click the focused match. Press Esc to cancel.
@@ -353,11 +353,11 @@ def build_text_candidates(words, max_words=MAX_PHRASE_WORDS):
     return candidates
 
 
-def _text_prefix_matches(query, candidates, exact=False):
+def _text_matches(query, candidates, exact=False):
     """Return the shortest viable candidate for each same-line start word."""
     by_start = {}
     for c in candidates:
-        hit = (c["n"] == query) if exact else c["n"].startswith(query)
+        hit = (c["n"] == query) if exact else (query in c["n"])
         if not hit:
             continue
         key = (c["line"], c["word"])
@@ -382,11 +382,17 @@ def _hint_code(index, first_chars):
 
 def assign_hints(matches, base_query):
     """Attach collision-aware selector suffixes to currently highlighted matches."""
-    next_chars = {
-        m["n"][len(base_query)]
-        for m in matches
-        if len(m["n"]) > len(base_query)
-    }
+    next_chars = set()
+    for m in matches:
+        start = 0
+        while True:
+            idx = m["n"].find(base_query, start)
+            if idx < 0:
+                break
+            next_idx = idx + len(base_query)
+            if next_idx < len(m["n"]):
+                next_chars.add(m["n"][next_idx])
+            start = idx + 1
     first_chars = "".join(k for k in HINT_KEYS if k not in next_chars)
     hinted = []
     for i, m in enumerate(matches):
@@ -402,11 +408,11 @@ def assign_hints(matches, base_query):
 def resolve_selector_matches(query, candidates, hint_context=None, exact=False):
     """Resolve normalized user input into visible text or selector matches.
 
-    Text-prefix matching wins. If the input stops matching visible text, the
-    previous text-prefix context is reused and the extra chars filter selector
-    suffixes. Enter is handled elsewhere; this function only narrows focus.
+    Text matching wins. If the input stops matching visible text, the previous
+    text context is reused and the extra chars filter selector suffixes. Enter
+    is handled elsewhere; this function only narrows focus.
     """
-    text_matches = _text_prefix_matches(query, candidates, exact=exact)
+    text_matches = _text_matches(query, candidates, exact=exact)
     if text_matches:
         matches = assign_hints(text_matches, query)
         return matches, {"base": query, "matches": matches}, ""
@@ -512,7 +518,7 @@ class App:
         cmd.insert(0, make_toggle_command())
         cmd.configure(state="readonly")
         cmd.pack(fill="x", pady=(4, 6))
-        ttk.Label(frm, text="In the search box: type a prefix, keep typing "
+        ttk.Label(frm, text="In the search box: type visible text, keep typing "
                             "selector letters to narrow, Enter to click, "
                             "Esc to close.",
                   foreground="#555", wraplength=410,
@@ -520,7 +526,7 @@ class App:
 
         ttk.Checkbutton(frm, text="Scan all monitors",
                         variable=self.all_monitors).pack(anchor="w")
-        ttk.Checkbutton(frm, text="Exact text only (off = prefix + selectors)",
+        ttk.Checkbutton(frm, text="Exact text only (off = contains + selectors)",
                         variable=self.whole_word,
                         command=self._refilter).pack(anchor="w")
         ttk.Checkbutton(frm, text="Upscale 2x for small text (more accurate)",

@@ -38,7 +38,7 @@ class MatcherTests(unittest.TestCase):
         self.assertEqual(matches[0]["text"], "Open File")
         self.assertEqual(matches[0]["n"], "openfile")
 
-    def test_text_prefix_wins_over_selector_suffix(self):
+    def test_text_match_wins_over_selector_suffix(self):
         candidates = build_text_candidates([
             word("Open", 0, index=0),
             word("File", 50, index=1),
@@ -51,6 +51,17 @@ class MatcherTests(unittest.TestCase):
 
         self.assertEqual(suffix, "")
         self.assertEqual(matches[0]["text"], "Open File")
+
+    def test_middle_of_word_search_matches_visible_text(self):
+        candidates = build_text_candidates([
+            word("Settings", 0, index=0),
+            word("Switches", 90, index=1),
+        ])
+
+        matches, _, suffix = resolve_selector_matches(_norm("ttin"), candidates)
+
+        self.assertEqual(suffix, "")
+        self.assertEqual([m["text"] for m in matches], ["Settings"])
 
     def test_selector_suffix_disqualifies_nonmatching_highlights(self):
         candidates = build_text_candidates([
