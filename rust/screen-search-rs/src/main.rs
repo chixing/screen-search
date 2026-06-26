@@ -43,8 +43,9 @@ use windows::Win32::System::Threading::{
 };
 use windows::Win32::System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    INPUT, INPUT_0, INPUT_MOUSE, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEINPUT, SendInput,
-    SetFocus, VIRTUAL_KEY, VK_ESCAPE, VK_F5, VK_RETURN, VK_TAB,
+    INPUT, INPUT_0, INPUT_MOUSE, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_RIGHTDOWN,
+    MOUSEEVENTF_RIGHTUP, MOUSEINPUT, SendInput, SetFocus, VIRTUAL_KEY, VK_CONTROL, VK_ESCAPE,
+    VK_F5, VK_RETURN, VK_SHIFT, VK_TAB,
 };
 use windows::Win32::UI::Shell::{
     NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW, Shell_NotifyIconW,
@@ -91,6 +92,19 @@ const POPUP_PAD: i32 = 10;
 const EDIT_H: i32 = 26;
 const STATUS_Y: i32 = 42;
 const STATUS_H: i32 = 18;
+
+#[derive(Clone, Copy)]
+enum ConfirmAction {
+    Move,
+    LeftClick,
+    RightClick,
+}
+
+#[derive(Clone, Copy)]
+enum MouseButton {
+    Left,
+    Right,
+}
 
 const WM_TOGGLE: u32 = WM_APP + 1;
 const WM_TOGGLE_ALL: u32 = WM_APP + 2;
@@ -452,7 +466,7 @@ unsafe fn popup_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 let mut app = app.lock();
                 match vk {
                     VK_RETURN => {
-                        app.confirm();
+                        app.confirm(current_confirm_action());
                         return LRESULT(0);
                     }
                     VK_ESCAPE => {
@@ -732,7 +746,7 @@ impl App {
     fn handle_key(&mut self, vk: VIRTUAL_KEY) -> bool {
         match vk {
             VK_RETURN => {
-                self.confirm();
+                self.confirm(current_confirm_action());
                 true
             }
             VK_ESCAPE => {
@@ -1193,7 +1207,7 @@ impl App {
             set_text(
                 self.status,
                 &format!(
-                    "{} {mode} match(es) for '{text}'. Type selector letters; Enter = click.",
+                    "{} {mode} match(es) for '{text}'. Enter move; Ctrl+Enter click; Ctrl+Shift+Enter right.",
                     self.matches.len()
                 ),
             );
@@ -1223,7 +1237,7 @@ impl App {
         }
     }
 
-    fn confirm(&mut self) {
+    fn confirm(&mut self, action: ConfirmAction) {
         if self.matches.is_empty() {
             return;
         }
@@ -1231,7 +1245,11 @@ impl App {
         self.snap = None;
         self.hide_popup();
         thread::spawn(move || unsafe {
-            click_at(m.sx, m.sy);
+            match action {
+                ConfirmAction::Move => move_cursor_to(m.sx, m.sy),
+                ConfirmAction::LeftClick => click_at(m.sx, m.sy, MouseButton::Left),
+                ConfirmAction::RightClick => click_at(m.sx, m.sy, MouseButton::Right),
+            }
         });
     }
 
@@ -2079,18 +2097,44 @@ fn post_capture_failed(hwnd: HWND, seq: u64, err: String) {
     }
 }
 
-unsafe fn click_at(x: i32, y: i32) {
+fn current_confirm_action() -> ConfirmAction {
+    unsafe {
+        let ctrl_down = is_key_down(VK_CONTROL);
+        let shift_down = is_key_down(VK_SHIFT);
+        if ctrl_down && shift_down {
+            ConfirmAction::RightClick
+        } else if ctrl_down {
+            ConfirmAction::LeftClick
+        } else {
+            ConfirmAction::Move
+        }
+    }
+}
+
+unsafe fn is_key_down(vk: VIRTUAL_KEY) -> bool {
+    (windows::Win32::UI::Input::KeyboardAndMouse::GetKeyState(vk.0 as i32) as u16 & 0x8000) != 0
+}
+
+unsafe fn move_cursor_to(x: i32, y: i32) {
     let _ = SetCursorPos(x, y);
+}
+
+unsafe fn click_at(x: i32, y: i32, button: MouseButton) {
+    move_cursor_to(x, y);
     let hwnd = WindowFromPoint(POINT { x, y });
     if !hwnd.0.is_null() {
         let top = GetAncestor(hwnd, GA_ROOT);
         let _ = SetForegroundWindow(if !top.0.is_null() { top } else { hwnd });
     }
     thread::sleep(Duration::from_millis(80));
-    let _ = SetCursorPos(x, y);
-    send_mouse(MOUSEEVENTF_LEFTDOWN);
+    move_cursor_to(x, y);
+    let (down, up) = match button {
+        MouseButton::Left => (MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP),
+        MouseButton::Right => (MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP),
+    };
+    send_mouse(down);
     thread::sleep(Duration::from_millis(90));
-    send_mouse(MOUSEEVENTF_LEFTUP);
+    send_mouse(up);
 }
 
 unsafe fn send_mouse(flags: windows::Win32::UI::Input::KeyboardAndMouse::MOUSE_EVENT_FLAGS) {

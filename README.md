@@ -1,6 +1,6 @@
 # Screen Search
 
-A native Windows utility for finding visible on-screen text with OCR and clicking it from the keyboard. Press Alt+F, type text from the screen, narrow with the displayed selector letters, and press Enter to click.
+A native Windows utility for finding visible on-screen text with OCR and targeting it from the keyboard. Press Alt+F, type text from the screen, narrow with the displayed selector letters, then move or click the selected target.
 
 The active implementation is the Rust app in [`rust/screen-search-rs`](rust/screen-search-rs).
 
@@ -16,7 +16,7 @@ Rust resident process
 ├─ Windows Runtime OCR            → text detection
 ├─ GDI capture                    → all-monitor screenshots
 ├─ click-through overlay          → visible match boxes/selectors
-└─ SendInput                      → final click on Enter
+└─ SendInput                      → optional click on Ctrl+Enter / Ctrl+Shift+Enter
 ```
 
 ## Search behavior
@@ -27,7 +27,10 @@ Rust resident process
 - Prefix and middle-of-word matching are supported.
 - Same-line words are grouped into phrase candidates, so `openf` can match `Open File`.
 - Hints are generated from the highlighted text, not from a separate hint prefix.
-- Typing hint letters narrows/focuses matches. Enter is the only key that clicks.
+- Typing hint letters narrows/focuses matches.
+- Enter moves the mouse to the selected match.
+- Ctrl+Enter left-clicks the selected match.
+- Ctrl+Shift+Enter right-clicks the selected match.
 - Esc dismisses the popup.
 - F5 forces a fresh capture.
 
