@@ -546,7 +546,7 @@ class App:
             mon = _cursor_monitor(sct)  # the monitor the cursor is on
         w, h = 480, 74
         x = mon["left"] + (mon["width"] - w) // 2
-        y = mon["top"] + int(mon["height"] * 0.28)
+        y = mon["top"] + mon["height"] - h - 72
         self.popup.geometry(f"{w}x{h}+{x}+{y}")
 
     # -- popup show/hide ------------------------------------------
