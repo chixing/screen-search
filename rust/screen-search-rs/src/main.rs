@@ -2157,73 +2157,12 @@ fn merge_ocr_words(primary: &[Word], extra: &[Word]) -> Vec<Word> {
     merged
 }
 
-fn augment_ocr_words(mut words: Vec<Word>) -> Vec<Word> {
-    infer_missing_tradingview_1d(&mut words);
-    words
-}
-
-// Windows OCR commonly misses the leading "1D" in compact TradingView range rows while
-// still reading the adjacent "5D 1M All" labels. Add that one cheap synthetic word so
-// searching "1D" can still target the visible label.
-fn infer_missing_tradingview_1d(words: &mut Vec<Word>) {
-    let snapshot = words.clone();
-    for five in snapshot.iter().filter(|w| w.n == "5d") {
-        let mut line_words = snapshot
-            .iter()
-            .filter(|w| w.line == five.line && (w.y - five.y).abs() <= five.h.max(10.0))
-            .collect::<Vec<_>>();
-        line_words.sort_by(|a, b| a.x.total_cmp(&b.x));
-
-        let Some(pos) = line_words
-            .iter()
-            .position(|w| std::ptr::eq(*w, five) || (w.n == five.n && (w.x - five.x).abs() < 1.0))
-        else {
-            continue;
-        };
-        let has_1m_after = line_words.iter().skip(pos + 1).take(3).any(|w| w.n == "1m");
-        let has_all_after = line_words
-            .iter()
-            .skip(pos + 1)
-            .take(4)
-            .any(|w| w.n == "all");
-        if !has_1m_after || !has_all_after {
-            continue;
-        }
-        let Some(next) = line_words.iter().skip(pos + 1).find(|w| w.n == "1m") else {
-            continue;
-        };
-        let gap = (next.x - (five.x + five.w)).clamp(6.0, 32.0);
-        let inferred_w = five.w.max(14.0);
-        let inferred_x = five.x - gap - inferred_w;
-        if inferred_x < 0.0 {
-            continue;
-        }
-        let duplicate = line_words.iter().any(|w| {
-            w.n == "1d" && (w.x - inferred_x).abs() <= inferred_w && (w.y - five.y).abs() <= five.h
-        });
-        if duplicate {
-            continue;
-        }
-        words.push(Word {
-            text: "1D".to_string(),
-            x: inferred_x,
-            y: five.y,
-            w: inferred_w,
-            h: five.h,
-            line: five.line,
-            word: five.word.saturating_sub(1),
-            n: norm("1D"),
-        });
-    }
-}
-
 fn make_snapshot(
     words: Vec<Word>,
     region: Region,
     complete: bool,
     quality: &'static str,
 ) -> Snapshot {
-    let words = augment_ocr_words(words);
     let candidates = build_text_candidates(&words);
     Snapshot {
         words,
@@ -2326,7 +2265,6 @@ fn run_ocr_diagnostics(args: &[String], bench: bool) -> Result<()> {
                     let ocr_start = Instant::now();
                     match ocr_words(&shot, *requested_scale) {
                         Ok(words) => {
-                            let words = augment_ocr_words(words);
                             let elapsed = ocr_start.elapsed();
                             report.push_str(&format!(
                                 "  requested_scale={requested_scale:.2} actual_scale={actual_scale:.2} ocr_ms={} words={}\n",
@@ -2565,50 +2503,5 @@ fn run() -> Result<()> {
 fn main() {
     if let Err(err) = run() {
         show_message("Screen Search Rust", &format!("{err:?}"));
-    }
-}
-
-#[cfg(test)]
-mod app_tests {
-    use super::*;
-
-    fn test_word(text: &str, x: f32, word: usize) -> Word {
-        Word {
-            text: text.to_string(),
-            x,
-            y: 100.0,
-            w: text.len() as f32 * 8.0,
-            h: 12.0,
-            line: 7,
-            word,
-            n: norm(text),
-        }
-    }
-
-    #[test]
-    fn infers_missing_tradingview_1d_from_time_range_row() {
-        let words = vec![
-            test_word("5D", 80.0, 1),
-            test_word("1M", 108.0, 2),
-            test_word("All", 138.0, 3),
-        ];
-
-        let augmented = augment_ocr_words(words);
-        let inferred = augmented.iter().find(|w| w.n == "1d").unwrap();
-        assert_eq!(inferred.text, "1D");
-        assert!(inferred.x < 80.0);
-    }
-
-    #[test]
-    fn does_not_duplicate_existing_tradingview_1d() {
-        let words = vec![
-            test_word("1D", 52.0, 0),
-            test_word("5D", 80.0, 1),
-            test_word("1M", 108.0, 2),
-            test_word("All", 138.0, 3),
-        ];
-
-        let augmented = augment_ocr_words(words);
-        assert_eq!(augmented.iter().filter(|w| w.n == "1d").count(), 1);
     }
 }
