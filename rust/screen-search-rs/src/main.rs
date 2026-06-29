@@ -2162,9 +2162,41 @@ fn augment_ocr_words(mut words: Vec<Word>) -> Vec<Word> {
     words
 }
 
-// Windows OCR commonly misses the leading "1D" in compact TradingView range rows while
-// still reading the adjacent "5D 1M All" labels. Add that one cheap synthetic word so
-// searching "1D" can still target the visible label.
+fn has_word_near(words: &[Word], text: &str, x: f32, y: f32, w: f32, h: f32) -> bool {
+    let n = norm(text);
+    words
+        .iter()
+        .any(|word| word.n == n && (word.x - x).abs() <= w && (word.y - y).abs() <= h.max(10.0))
+}
+
+fn push_inferred_word(
+    words: &mut Vec<Word>,
+    text: &str,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    line: usize,
+    word: usize,
+) {
+    if x < 0.0 || has_word_near(words, text, x, y, w, h) {
+        return;
+    }
+    words.push(Word {
+        text: text.to_string(),
+        x,
+        y,
+        w,
+        h,
+        line,
+        word,
+        n: norm(text),
+    });
+}
+
+// Windows OCR commonly misses the leading "1D" in compact TradingView range rows.
+// It may still read either "5D 1M All" or only "1M All", so infer the missing
+// leading label from those stable neighbors.
 fn infer_missing_tradingview_1d(words: &mut Vec<Word>) {
     let snapshot = words.clone();
     for five in snapshot.iter().filter(|w| w.n == "5d") {
@@ -2195,25 +2227,56 @@ fn infer_missing_tradingview_1d(words: &mut Vec<Word>) {
         let gap = (next.x - (five.x + five.w)).clamp(6.0, 32.0);
         let inferred_w = five.w.max(14.0);
         let inferred_x = five.x - gap - inferred_w;
-        if inferred_x < 0.0 {
+        push_inferred_word(
+            words,
+            "1D",
+            inferred_x,
+            five.y,
+            inferred_w,
+            five.h,
+            five.line,
+            five.word.saturating_sub(1),
+        );
+    }
+
+    let snapshot = words.clone();
+    for one_m in snapshot.iter().filter(|w| w.n == "1m") {
+        let mut line_words = snapshot
+            .iter()
+            .filter(|w| w.line == one_m.line && (w.y - one_m.y).abs() <= one_m.h.max(10.0))
+            .collect::<Vec<_>>();
+        line_words.sort_by(|a, b| a.x.total_cmp(&b.x));
+
+        let Some(pos) = line_words.iter().position(|w| {
+            std::ptr::eq(*w, one_m) || (w.n == one_m.n && (w.x - one_m.x).abs() < 1.0)
+        }) else {
+            continue;
+        };
+        let Some(all) = line_words
+            .iter()
+            .skip(pos + 1)
+            .take(3)
+            .find(|w| w.n == "all")
+        else {
+            continue;
+        };
+        if line_words.iter().any(|w| w.n == "1d" && w.x < one_m.x) {
             continue;
         }
-        let duplicate = line_words.iter().any(|w| {
-            w.n == "1d" && (w.x - inferred_x).abs() <= inferred_w && (w.y - five.y).abs() <= five.h
-        });
-        if duplicate {
-            continue;
-        }
-        words.push(Word {
-            text: "1D".to_string(),
-            x: inferred_x,
-            y: five.y,
-            w: inferred_w,
-            h: five.h,
-            line: five.line,
-            word: five.word.saturating_sub(1),
-            n: norm("1D"),
-        });
+        let gap = (all.x - (one_m.x + one_m.w)).clamp(6.0, 32.0);
+        let inferred_w = one_m.w.max(14.0);
+        let inferred_5d_x = one_m.x - gap - inferred_w;
+        let inferred_1d_x = inferred_5d_x - gap - inferred_w;
+        push_inferred_word(
+            words,
+            "1D",
+            inferred_1d_x,
+            one_m.y,
+            inferred_w,
+            one_m.h,
+            one_m.line,
+            one_m.word.saturating_sub(2),
+        );
     }
 }
 
@@ -2610,5 +2673,15 @@ mod app_tests {
 
         let augmented = augment_ocr_words(words);
         assert_eq!(augmented.iter().filter(|w| w.n == "1d").count(), 1);
+    }
+
+    #[test]
+    fn infers_missing_tradingview_1d_when_5d_is_also_missing() {
+        let words = vec![test_word("1M", 108.0, 2), test_word("All", 138.0, 3)];
+
+        let augmented = augment_ocr_words(words);
+        let inferred = augmented.iter().find(|w| w.n == "1d").unwrap();
+        assert_eq!(inferred.text, "1D");
+        assert!(inferred.x < 108.0);
     }
 }
