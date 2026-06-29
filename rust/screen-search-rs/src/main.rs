@@ -76,6 +76,7 @@ const EVENT_QUIT_NAME: &str = "ScreenSearchRustQuitEvent";
 const MUTEX_NAME: &str = "ScreenSearchRustSingletonMutex";
 
 const ALL_MONITOR_OCR_PASSES: &[(f32, &str)] = &[(1.0, "fast"), (2.0, "medium"), (3.0, "high")];
+const HIGH_CONTRAST_OCR_MIN_SCALE: f32 = 2.0;
 const DEFAULT_OVERLAY_ENABLED: bool = true;
 const OVERLAY_TEST_SIZE: (i32, i32) = (360, 180);
 
@@ -109,6 +110,12 @@ enum ConfirmAction {
 enum MouseButton {
     Left,
     Right,
+}
+
+#[derive(Clone, Copy)]
+enum OcrVariant {
+    Raw,
+    HighContrast,
 }
 
 const WM_TOGGLE: u32 = WM_APP + 1;
@@ -2038,9 +2045,9 @@ fn effective_scale(shot: &Shot, scale: f32) -> f32 {
     scale.min(cap).max(1.0)
 }
 
-fn bitmap_from_shot(shot: &Shot, scale: f32) -> Result<(SoftwareBitmap, f32)> {
+fn bitmap_from_shot(shot: &Shot, scale: f32, variant: OcrVariant) -> Result<(SoftwareBitmap, f32)> {
     let scale = effective_scale(shot, scale);
-    let (w, h, bgra) = if (scale - 1.0).abs() < f32::EPSILON {
+    let (w, h, mut bgra) = if (scale - 1.0).abs() < f32::EPSILON {
         (shot.width, shot.height, shot.bgra.clone())
     } else {
         let rgba = bgra_to_rgba(&shot.bgra);
@@ -2052,6 +2059,9 @@ fn bitmap_from_shot(shot: &Shot, scale: f32) -> Result<(SoftwareBitmap, f32)> {
         let bgra = rgba_to_bgra(resized.as_raw());
         (w as i32, h as i32, bgra)
     };
+    if matches!(variant, OcrVariant::HighContrast) {
+        apply_high_contrast_ocr_preprocess(&mut bgra);
+    }
     let writer = DataWriter::new()?;
     writer.WriteBytes(&bgra)?;
     let buffer = writer.DetachBuffer()?;
@@ -2071,8 +2081,30 @@ fn rgba_to_bgra(bytes: &[u8]) -> Vec<u8> {
     bgra_to_rgba(bytes)
 }
 
-fn ocr_words(shot: &Shot, scale: f32) -> std::result::Result<Vec<Word>, String> {
-    let (bitmap, scale) = bitmap_from_shot(shot, scale).map_err(|e| format!("{e:?}"))?;
+fn apply_high_contrast_ocr_preprocess(bgra: &mut [u8]) {
+    for px in bgra.chunks_exact_mut(4) {
+        let b = px[0] as u16;
+        let g = px[1] as u16;
+        let r = px[2] as u16;
+        let max = r.max(g).max(b);
+        let min = r.min(g).min(b);
+        let luma = (77 * r + 150 * g + 29 * b) / 256;
+        let ink = luma >= 145 || (max >= 120 && max - min <= 80);
+        let v = if ink { 0 } else { 255 };
+        px[0] = v;
+        px[1] = v;
+        px[2] = v;
+        px[3] = 255;
+    }
+}
+
+fn recognize_words(
+    shot: &Shot,
+    scale: f32,
+    variant: OcrVariant,
+    line_offset: usize,
+) -> std::result::Result<Vec<Word>, String> {
+    let (bitmap, scale) = bitmap_from_shot(shot, scale, variant).map_err(|e| format!("{e:?}"))?;
     let engine = OcrEngine::TryCreateFromUserProfileLanguages()
         .map_err(|e| format!("OCR engine init failed: {e:?}"))?;
     let result = engine
@@ -2096,13 +2128,37 @@ fn ocr_words(shot: &Shot, scale: f32) -> std::result::Result<Vec<Word>, String> 
                 y: r.Y * inv,
                 w: r.Width * inv,
                 h: r.Height * inv,
-                line: line_no as usize,
+                line: line_offset + line_no as usize,
                 word: word_no as usize,
                 n: norm(&text),
             });
         }
     }
     Ok(out)
+}
+
+fn next_line_offset(words: &[Word]) -> usize {
+    words.iter().map(|w| w.line).max().unwrap_or(0) + 1
+}
+
+fn ocr_words(shot: &Shot, scale: f32) -> std::result::Result<Vec<Word>, String> {
+    let mut words = recognize_words(shot, scale, OcrVariant::Raw, 0)?;
+    if effective_scale(shot, scale) >= HIGH_CONTRAST_OCR_MIN_SCALE {
+        match recognize_words(
+            shot,
+            scale,
+            OcrVariant::HighContrast,
+            next_line_offset(&words),
+        ) {
+            Ok(extra) => {
+                words = merge_ocr_words(&words, &extra);
+            }
+            Err(err) => {
+                trace_log(format!("high contrast OCR failed: {err}"));
+            }
+        }
+    }
+    Ok(words)
 }
 
 fn offset_words(
@@ -2503,5 +2559,21 @@ fn run() -> Result<()> {
 fn main() {
     if let Err(err) = run() {
         show_message("Screen Search Rust", &format!("{err:?}"));
+    }
+}
+
+#[cfg(test)]
+mod app_tests {
+    use super::*;
+
+    #[test]
+    fn high_contrast_preprocess_turns_light_text_into_dark_ink() {
+        let mut bgra = vec![
+            12, 12, 12, 255, //
+            240, 240, 240, 255,
+        ];
+        apply_high_contrast_ocr_preprocess(&mut bgra);
+        assert_eq!(&bgra[0..4], &[255, 255, 255, 255]);
+        assert_eq!(&bgra[4..8], &[0, 0, 0, 255]);
     }
 }

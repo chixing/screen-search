@@ -23,7 +23,7 @@ Rust resident process
 ## Search behavior
 
 - Alt+F searches all monitors by default.
-- OCR starts when the popup opens. For all-monitor search, every monitor is OCR'd first at 1×, then refined with 2× and 3× passes.
+- OCR starts when the popup opens. For all-monitor search, every monitor is OCR'd first at 1×, then refined with 2× and 3× passes. Upscaled passes also merge a high-contrast OCR variant to improve small light-on-dark text.
 - Matching is normalized: case, spaces, and punctuation are ignored.
 - Prefix and middle-of-word matching are supported.
 - Same-line words are grouped into phrase candidates, so `openf` can match `Open File`.
@@ -121,7 +121,7 @@ Screen Search does not register its own global hotkey. AutoHotkey owns Alt+F and
 - Rust removes the previous Python/Tk startup and UI path.
 - Capture uses raw pixels rather than a PNG encode/decode round trip.
 - Filtering existing OCR results happens in memory and should be effectively instant.
-- A broad all-monitor search shows a 1× result set across every monitor first, then merges higher-quality 2× and 3× passes as they finish.
+- A broad all-monitor search shows a 1× result set across every monitor first, then merges higher-quality 2× and 3× passes as they finish. The 2×/3× passes include a high-contrast variant for small dark-theme text.
 - Windows OCR rejects images over 10,000 px in either dimension, so upscale is clamped.
 
 ## Diagnostics
