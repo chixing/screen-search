@@ -149,13 +149,46 @@ fn suppress_overlapping_matches(matches: Vec<Candidate>) -> Vec<Candidate> {
     kept
 }
 
+fn confusable_class(c: char) -> char {
+    match c {
+        '1' | 'i' | 'l' => '1',
+        '0' | 'o' => '0',
+        _ => c,
+    }
+}
+
+fn confusable_eq(a: char, b: char) -> bool {
+    a == b || confusable_class(a) == confusable_class(b)
+}
+
+fn confusable_exact(haystack: &str, needle: &str) -> bool {
+    haystack.chars().count() == needle.chars().count()
+        && haystack
+            .chars()
+            .zip(needle.chars())
+            .all(|(a, b)| confusable_eq(a, b))
+}
+
+fn confusable_contains(haystack: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    let hay = haystack.chars().collect::<Vec<_>>();
+    let nee = needle.chars().collect::<Vec<_>>();
+    if nee.len() > hay.len() {
+        return false;
+    }
+    hay.windows(nee.len())
+        .any(|window| window.iter().zip(&nee).all(|(a, b)| confusable_eq(*a, *b)))
+}
+
 pub fn text_matches(query: &str, candidates: &[Candidate], exact: bool) -> Vec<Candidate> {
     let mut by_start: Vec<Candidate> = Vec::new();
     for c in candidates {
         let hit = if exact {
-            c.n == query
+            c.n == query || confusable_exact(&c.n, query)
         } else {
-            c.n.contains(query)
+            c.n.contains(query) || confusable_contains(&c.n, query)
         };
         if !hit {
             continue;
@@ -315,6 +348,35 @@ mod tests {
             resolve_selector_matches(&norm("ttin"), &candidates, None, false);
         assert_eq!(suffix, "");
         assert_eq!(matches[0].text, "Settings");
+    }
+
+    #[test]
+    fn ocr_confusable_digit_one_matches_i_or_l() {
+        let words = vec![word("ID", 10.0, 0), word("lD", 50.0, 1)];
+        let candidates = build_text_candidates(&words);
+        let (matches, _, _) = resolve_selector_matches(&norm("1d"), &candidates, None, false);
+        assert_eq!(
+            matches.iter().map(|m| m.text.as_str()).collect::<Vec<_>>(),
+            vec!["ID", "lD"]
+        );
+    }
+
+    #[test]
+    fn exact_search_allows_ocr_confusable_digit_one() {
+        let words = vec![word("ID", 10.0, 0)];
+        let candidates = build_text_candidates(&words);
+        let (matches, _, _) = resolve_selector_matches(&norm("1d"), &candidates, None, true);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].text, "ID");
+    }
+
+    #[test]
+    fn ocr_confusable_zero_matches_o() {
+        let words = vec![word("Open", 10.0, 0)];
+        let candidates = build_text_candidates(&words);
+        let (matches, _, _) = resolve_selector_matches(&norm("0pen"), &candidates, None, false);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].text, "Open");
     }
 
     #[test]

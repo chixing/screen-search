@@ -25,6 +25,7 @@ Rust resident process
 - Alt+F searches all monitors by default.
 - OCR starts when the popup opens. For all-monitor search, every monitor is OCR'd first at 1×, then refined with 2× and 3× passes. Upscaled passes also merge a high-contrast OCR variant to improve small light-on-dark text.
 - Matching is normalized: case, spaces, and punctuation are ignored.
+- Common OCR confusions are tolerated during matching, including `1`/`I`/`l` and `0`/`O`.
 - Prefix and middle-of-word matching are supported.
 - Same-line words are grouped into phrase candidates, so `openf` can match `Open File`.
 - Hints are generated from the highlighted text, not from a separate hint prefix.
