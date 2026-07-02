@@ -64,9 +64,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
     SetWindowPos, ShowWindow, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage,
     ULW_ALPHA, UpdateLayeredWindow, WINDOW_EX_STYLE, WINDOW_STYLE, WM_ACTIVATE, WM_APP, WM_COMMAND,
     WM_CONTEXTMENU, WM_CREATE, WM_CTLCOLOREDIT, WM_CTLCOLORSTATIC, WM_DESTROY, WM_KEYDOWN,
-    WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_PAINT, WM_RBUTTONUP, WM_SETFONT, WM_TIMER, WNDCLASSW,
-    WS_BORDER, WS_CHILD, WS_CLIPSIBLINGS, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
-    WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP, WS_VISIBLE, WindowFromPoint,
+    WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_NULL, WM_PAINT, WM_RBUTTONUP, WM_SETFONT, WM_TIMER,
+    WNDCLASSW, WS_BORDER, WS_CHILD, WS_CLIPSIBLINGS, WS_EX_LAYERED, WS_EX_NOACTIVATE,
+    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP, WS_VISIBLE, WindowFromPoint,
 };
 use windows::core::{Error, PCWSTR, Result, w};
 
@@ -77,7 +77,6 @@ const MUTEX_NAME: &str = "ScreenSearchRustSingletonMutex";
 
 const ALL_MONITOR_OCR_PASSES: &[(f32, &str)] = &[(1.0, "fast"), (2.0, "medium"), (3.0, "high")];
 const HIGH_CONTRAST_OCR_MIN_SCALE: f32 = 2.0;
-const DEFAULT_OVERLAY_ENABLED: bool = true;
 const OVERLAY_TEST_SIZE: (i32, i32) = (360, 180);
 
 const THEME_BG: (u8, u8, u8) = (17, 24, 39);
@@ -130,8 +129,6 @@ const TIMER_REFOCUS: usize = 2;
 const TRAY_UID: u32 = 1;
 const MENU_OPEN: u32 = 100;
 const MENU_SCAN_ALL: u32 = 101;
-const MENU_UPSCALE: u32 = 102;
-const MENU_OVERLAY: u32 = 103;
 const MENU_QUIT: u32 = 199;
 const APP_DIR_NAME: &str = "ScreenSearch";
 const CONFIG_FILE_NAME: &str = "config.ini";
@@ -147,17 +144,11 @@ static TRACE_ENABLED: AtomicBool = AtomicBool::new(false);
 #[derive(Clone, Copy, Debug)]
 struct Settings {
     scan_all: bool,
-    upscale: bool,
-    overlay_enabled: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self {
-            scan_all: true,
-            upscale: true,
-            overlay_enabled: DEFAULT_OVERLAY_ENABLED,
-        }
+        Self { scan_all: true }
     }
 }
 
@@ -209,8 +200,6 @@ fn load_settings() -> Settings {
         };
         match key.trim() {
             "scan_all" => settings.scan_all = value,
-            "upscale" => settings.upscale = value,
-            "overlay_enabled" => settings.overlay_enabled = value,
             _ => {}
         }
     }
@@ -222,10 +211,7 @@ fn save_settings(settings: Settings) {
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);
     }
-    let text = format!(
-        "scan_all={}\nupscale={}\noverlay_enabled={}\n",
-        settings.scan_all, settings.upscale, settings.overlay_enabled
-    );
+    let text = format!("scan_all={}\n", settings.scan_all);
     let _ = fs::write(path, text);
 }
 
@@ -653,12 +639,22 @@ unsafe fn popup_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 || event == WM_CONTEXTMENU
                 || event == WM_LBUTTONDBLCLK
             {
-                if let Some(app) = APP.get() {
-                    let mut app = app.lock();
-                    if event == WM_LBUTTONDBLCLK {
-                        app.show_popup(false);
-                    } else {
-                        app.show_tray_menu();
+                if event == WM_LBUTTONDBLCLK {
+                    if let Some(app) = APP.get() {
+                        app.lock().show_popup(false);
+                    }
+                } else if let Some(app) = APP.get() {
+                    // TrackPopupMenu runs a modal message loop. Never hold APP's mutex while it
+                    // is open, because messages dispatched by that loop can re-enter this proc.
+                    let (owner, scan_all) = {
+                        let app = app.lock();
+                        (app.hwnd, app.scan_all)
+                    };
+                    let command = App::show_tray_menu(owner, scan_all);
+                    if command == MENU_QUIT {
+                        let _ = PostMessageW(owner, WM_QUIT_APP, WPARAM(0), LPARAM(0));
+                    } else if command != 0 {
+                        app.lock().handle_tray_command(command);
                     }
                 }
             }
@@ -707,9 +703,9 @@ impl App {
             hinstance,
             scan_all: settings.scan_all,
             exact: false,
-            upscale: settings.upscale,
+            upscale: true,
             debug_all: false,
-            overlay_enabled: settings.overlay_enabled,
+            overlay_enabled: true,
             cold_show,
             listen_events,
             ..Default::default()
@@ -719,8 +715,6 @@ impl App {
     fn current_settings(&self) -> Settings {
         Settings {
             scan_all: self.scan_all,
-            upscale: self.upscale,
-            overlay_enabled: self.overlay_enabled,
         }
     }
 
@@ -974,10 +968,10 @@ impl App {
         let _ = AppendMenuW(menu, flags, id as usize, PCWSTR(text.as_ptr()));
     }
 
-    fn show_tray_menu(&mut self) {
+    fn show_tray_menu(owner: HWND, scan_all: bool) -> u32 {
         unsafe {
             let Ok(menu) = CreatePopupMenu() else {
-                return;
+                return 0;
             };
             Self::append_menu_item(menu, MENU_OPEN, "Open Search", MF_STRING);
             let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
@@ -985,19 +979,7 @@ impl App {
                 menu,
                 MENU_SCAN_ALL,
                 "Scan all monitors",
-                Self::menu_flags(self.scan_all),
-            );
-            Self::append_menu_item(
-                menu,
-                MENU_UPSCALE,
-                "Upscale OCR",
-                Self::menu_flags(self.upscale),
-            );
-            Self::append_menu_item(
-                menu,
-                MENU_OVERLAY,
-                "Show overlay",
-                Self::menu_flags(self.overlay_enabled),
+                Self::menu_flags(scan_all),
             );
             let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
             Self::append_menu_item(menu, MENU_QUIT, "Quit", MF_STRING);
@@ -1005,50 +987,36 @@ impl App {
             let mut pt = POINT::default();
             if GetCursorPos(&mut pt).is_err() {
                 DestroyMenu(menu);
-                return;
+                return 0;
             }
-            let _ = SetForegroundWindow(self.hwnd);
+            let _ = SetForegroundWindow(owner);
             let command = TrackPopupMenu(
                 menu,
                 TPM_RIGHTBUTTON | TPM_RETURNCMD,
                 pt.x,
                 pt.y,
                 0,
-                self.hwnd,
+                owner,
                 None,
             )
             .0 as u32;
             DestroyMenu(menu);
+            // Required by the notification-area menu contract so Windows dismisses the menu
+            // correctly when the user clicks elsewhere.
+            let _ = PostMessageW(owner, WM_NULL, WPARAM(0), LPARAM(0));
+            command
+        }
+    }
 
-            match command {
-                MENU_OPEN => self.show_popup(false),
-                MENU_SCAN_ALL => {
-                    self.scan_all = !self.scan_all;
-                    self.save_current_settings();
-                    self.recapture_if_open();
-                }
-                MENU_UPSCALE => {
-                    self.upscale = !self.upscale;
-                    self.save_current_settings();
-                    self.recapture_if_open();
-                }
-                MENU_OVERLAY => {
-                    self.overlay_enabled = !self.overlay_enabled;
-                    self.save_current_settings();
-                    if self.overlay_enabled {
-                        if self.popup_visible && self.snap.is_some() {
-                            self.live_filter();
-                        }
-                    } else {
-                        self.close_overlay();
-                    }
-                }
-                MENU_QUIT => {
-                    self.hide_popup();
-                    DestroyWindow(self.hwnd);
-                }
-                _ => {}
+    fn handle_tray_command(&mut self, command: u32) {
+        match command {
+            MENU_OPEN => self.show_popup(false),
+            MENU_SCAN_ALL => {
+                self.scan_all = !self.scan_all;
+                self.save_current_settings();
+                self.recapture_if_open();
             }
+            _ => {}
         }
     }
 
@@ -2492,23 +2460,11 @@ fn run() -> Result<()> {
         return run_ocr_diagnostics(&args, false);
     }
     let mut settings = load_settings();
-    if args_has(&args, "--enable-overlay") {
-        settings.overlay_enabled = true;
-    }
-    if args_has(&args, "--disable-overlay") {
-        settings.overlay_enabled = false;
-    }
     if args_has(&args, "--active-monitor") {
         settings.scan_all = false;
     }
     if args_has(&args, "--all-monitors") {
         settings.scan_all = true;
-    }
-    if args_has(&args, "--upscale") {
-        settings.upscale = true;
-    }
-    if args_has(&args, "--no-upscale") {
-        settings.upscale = false;
     }
     let test_instance = args.iter().any(|a| a == "--test-instance");
     let toggle = args.iter().any(|a| a == "--toggle");

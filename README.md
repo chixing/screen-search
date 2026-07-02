@@ -11,7 +11,7 @@ Rust resident process
 ├─ single instance guard          → named mutex
 ├─ AutoHotkey Alt+F               → screen-search-rs.exe --toggle
 ├─ named Win32 events             → wake an existing resident
-├─ system tray menu               → search/settings toggles/quit
+├─ system tray menu               → search/monitor toggle/quit
 ├─ persisted config               → %APPDATA%\ScreenSearch\config.ini
 ├─ search popup                   → live query input
 ├─ Windows Runtime OCR            → text detection
@@ -88,13 +88,10 @@ The tray icon provides:
 
 - Open Search
 - Scan all monitors
-- Upscale OCR
-- Show overlay
 - Quit
 
-Scan all monitors, upscale OCR, and show overlay default to on.
-
-These settings persist to:
+Upscaled OCR and the match overlay remain enabled without tray toggles. The scan-all-monitors
+setting persists to:
 
 ```text
 %APPDATA%\ScreenSearch\config.ini
