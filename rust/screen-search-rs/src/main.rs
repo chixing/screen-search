@@ -34,9 +34,9 @@ use windows::Win32::Graphics::Gdi::{
     BitBlt, CLIP_DEFAULT_PRECIS, CreateBitmap, CreateCompatibleBitmap, CreateCompatibleDC,
     CreateDIBSection, CreateFontW, CreateSolidBrush, DEFAULT_CHARSET, DEFAULT_QUALITY,
     DIB_RGB_COLORS, DeleteDC, DeleteObject, EndPaint, EnumDisplayMonitors, FW_BOLD, FillRect,
-    GetDC, GetDIBits, GetMonitorInfoW, HBITMAP, HBRUSH, HDC, HFONT, HMONITOR, MONITORINFO,
-    OUT_DEFAULT_PRECIS, ReleaseDC, SRCCOPY, SelectObject, SetBkColor, SetBkMode, SetTextColor,
-    TRANSPARENT, TextOutW,
+    FrameRect, GetDC, GetDIBits, GetMonitorInfoW, HBITMAP, HBRUSH, HDC, HFONT, HMONITOR,
+    MONITORINFO, OUT_DEFAULT_PRECIS, ReleaseDC, SRCCOPY, SelectObject, SetBkColor, SetBkMode,
+    SetTextColor, TRANSPARENT, TextOutW,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::{
@@ -65,8 +65,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     ULW_ALPHA, UpdateLayeredWindow, WINDOW_EX_STYLE, WINDOW_STYLE, WM_ACTIVATE, WM_APP, WM_COMMAND,
     WM_CONTEXTMENU, WM_CREATE, WM_CTLCOLOREDIT, WM_CTLCOLORSTATIC, WM_DESTROY, WM_KEYDOWN,
     WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_NULL, WM_PAINT, WM_RBUTTONUP, WM_SETFONT, WM_TIMER,
-    WNDCLASSW, WS_BORDER, WS_CHILD, WS_CLIPSIBLINGS, WS_EX_LAYERED, WS_EX_NOACTIVATE,
-    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP, WS_VISIBLE, WindowFromPoint,
+    WNDCLASSW, WS_CHILD, WS_CLIPSIBLINGS, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+    WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP, WS_VISIBLE, WindowFromPoint,
 };
 use windows::core::{Error, PCWSTR, Result, w};
 
@@ -79,16 +79,17 @@ const ALL_MONITOR_OCR_PASSES: &[(f32, &str)] = &[(1.0, "fast"), (2.0, "medium"),
 const HIGH_CONTRAST_OCR_MIN_SCALE: f32 = 2.0;
 const OVERLAY_TEST_SIZE: (i32, i32) = (360, 180);
 
-const THEME_BG: (u8, u8, u8) = (17, 24, 39);
-const THEME_PANEL: (u8, u8, u8) = (55, 65, 81);
-const THEME_TEXT: (u8, u8, u8) = (249, 250, 251);
-const THEME_PRIMARY: (u8, u8, u8) = (34, 197, 94);
-const THEME_ACCENT: (u8, u8, u8) = (251, 146, 60);
-const THEME_STATUS: (u8, u8, u8) = (253, 186, 116);
-const THEME_SELECTED: (u8, u8, u8) = (34, 197, 94);
-const THEME_INK: (u8, u8, u8) = (15, 23, 42);
-const THEME_LABEL_BG: (u8, u8, u8) = (15, 23, 42);
-const THEME_LABEL_BORDER: (u8, u8, u8) = (0, 0, 0);
+// Shared dark visual system. The same sky accent is used for controls, highlights, and branding.
+const THEME_BG: (u8, u8, u8) = (11, 18, 32);
+const THEME_PANEL: (u8, u8, u8) = (24, 35, 52);
+const THEME_TEXT: (u8, u8, u8) = (248, 250, 252);
+const THEME_PRIMARY: (u8, u8, u8) = (56, 189, 248);
+const THEME_ACCENT: (u8, u8, u8) = (125, 211, 252);
+const THEME_STATUS: (u8, u8, u8) = (148, 163, 184);
+const THEME_SELECTED: (u8, u8, u8) = (34, 211, 238);
+const THEME_INK: (u8, u8, u8) = (2, 6, 23);
+const THEME_LABEL_BG: (u8, u8, u8) = (8, 47, 73);
+const THEME_LABEL_BORDER: (u8, u8, u8) = (56, 189, 248);
 const POPUP_W: i32 = 360;
 const POPUP_H: i32 = 72;
 const POPUP_PAD: i32 = 10;
@@ -362,47 +363,50 @@ fn theme_edit_brush() -> HBRUSH {
 }
 
 unsafe fn create_tray_icon() -> HICON {
-    let size = 16_i32;
-    let mut xor = vec![0u8; (size * size * 4) as usize];
-    for y in 0..size {
-        for x in 0..size {
-            let idx = ((y * size + x) * 4) as usize;
-            let in_circle = {
-                let dx = x - 7;
-                let dy = y - 7;
-                dx * dx + dy * dy <= 49
-            };
-            if in_circle {
-                xor[idx] = THEME_PRIMARY.2;
-                xor[idx + 1] = THEME_PRIMARY.1;
-                xor[idx + 2] = THEME_PRIMARY.0;
-                xor[idx + 3] = 255;
-            }
-            if (4..=11).contains(&x) && (6..=8).contains(&y) {
-                xor[idx] = THEME_ACCENT.2;
-                xor[idx + 1] = THEME_ACCENT.1;
-                xor[idx + 2] = THEME_ACCENT.0;
-                xor[idx + 3] = 255;
-            }
-            if (10..=12).contains(&x) && (9..=12).contains(&y) {
-                xor[idx] = THEME_INK.2;
-                xor[idx + 1] = THEME_INK.1;
-                xor[idx + 2] = THEME_INK.0;
-                xor[idx + 3] = 255;
+    fn fill_rect(pixels: &mut [u8], size: i32, rect: (i32, i32, i32, i32), color: (u8, u8, u8)) {
+        for y in rect.1..rect.3 {
+            for x in rect.0..rect.2 {
+                let idx = ((y * size + x) * 4) as usize;
+                pixels[idx] = color.2;
+                pixels[idx + 1] = color.1;
+                pixels[idx + 2] = color.0;
+                pixels[idx + 3] = 255;
             }
         }
     }
-    let color = CreateBitmap(size, size, 1, 32, Some(xor.as_ptr() as *const c_void));
-    let and_mask = vec![0u8; 32];
+
+    let size = 32_i32;
+    let mut pixels = vec![0u8; (size * size * 4) as usize];
+    for rect in [
+        (3, 4, 13, 7),
+        (3, 4, 6, 14),
+        (19, 4, 29, 7),
+        (26, 4, 29, 14),
+        (3, 25, 13, 28),
+        (3, 18, 6, 28),
+        (19, 25, 29, 28),
+        (26, 18, 29, 28),
+    ] {
+        fill_rect(&mut pixels, size, rect, THEME_PRIMARY);
+    }
+    for rect in [(9, 10, 23, 13), (9, 15, 20, 18), (9, 20, 24, 23)] {
+        fill_rect(&mut pixels, size, rect, THEME_TEXT);
+    }
+
+    let color = CreateBitmap(size, size, 1, 32, Some(pixels.as_ptr() as *const c_void));
+    let and_mask = vec![0u8; ((size * size) / 8) as usize];
     let mask = CreateBitmap(size, size, 1, 1, Some(and_mask.as_ptr() as *const c_void));
-    CreateIconIndirect(&ICONINFO {
+    let icon = CreateIconIndirect(&ICONINFO {
         fIcon: BOOL(1),
         xHotspot: 0,
         yHotspot: 0,
         hbmMask: mask,
         hbmColor: color,
     })
-    .unwrap_or_default()
+    .unwrap_or_default();
+    DeleteObject(color);
+    DeleteObject(mask);
+    icon
 }
 
 fn wide(s: &str) -> Vec<u16> {
@@ -504,6 +508,9 @@ unsafe fn popup_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 let mut rect = RECT::default();
                 if GetClientRect(hwnd, &mut rect).is_ok() {
                     FillRect(hdc, &rect, brush);
+                    let border = CreateSolidBrush(rgb_tuple(THEME_PRIMARY));
+                    FrameRect(hdc, &rect, border);
+                    DeleteObject(border);
                 }
             }
             EndPaint(hwnd, &ps);
@@ -769,7 +776,7 @@ impl App {
                 WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
                 popup_class,
                 w!("Screen Search"),
-                WS_POPUP | WS_BORDER,
+                WS_POPUP,
                 CW_USEDEFAULT,
                 CW_USEDEFAULT,
                 POPUP_W,
