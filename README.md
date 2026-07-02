@@ -155,6 +155,31 @@ Restart the resident after building:
 .\install.ps1
 ```
 
+## Commercialization roadmap
+
+Product decisions:
+
+- Keep the targeting engine OCR-only.
+- Free includes full-quality OCR on the monitor under the cursor and pointer movement.
+- Pro unlocks simultaneous all-monitor search and modifier-click actions.
+- Use one configurable hotkey; do not add search profiles.
+
+Milestones:
+
+- [x] Establish a shared visual theme and professional tray icon.
+- [ ] Register and persist a configurable native hotkey; remove the AutoHotkey dependency.
+- [ ] Add a compact settings window for the hotkey, monitor scope, startup, updates, and license.
+- [ ] Add Free/Pro capability checks for all-monitor search and modifier clicks.
+- [ ] Harden crash, cancellation, focus, mixed-DPI, and multi-monitor behavior.
+- [ ] Add an automated OCR screenshot regression suite.
+- [ ] Add installer, uninstaller, code signing, and automatic updates.
+- [ ] Add local diagnostics, optional crash reporting, licensing, and a Pro trial.
+
+Potential later Pro features:
+
+- Light, dark, and system themes with custom accent and highlight colors.
+- Additional click actions and appearance controls.
+
 ## Known constraints
 
 - Windows OCR accuracy is still the main quality limit.
